@@ -301,6 +301,35 @@ function tdmeDirectRequest_(body) {
 }
 
 function tdmeApplyMetrikaAutomaticGoals_(rows, dateFrom, dateTo) {
+  let metrika;
+
+  try {
+    metrika = tdmeFetchMetrikaAutomaticGoalsByCampaign_(dateFrom, dateTo);
+  } catch (e) {
+    Logger.log(
+      'WARNING: ЕНО продолжен без дополнительного блока целей Метрики за ' +
+      dateFrom + ' - ' + dateTo +
+      '. Причина: ' + (e && e.message ? e.message : String(e))
+    );
+
+    // Важно: не роняем весь недельный отчёт.
+    // Данные из Директа уже загружены, блок ЕНО должен собраться.
+    return;
+  }
+
+  rows.forEach(row => {
+    const key = tdmeCampaignKey_(row.campaignName);
+    const goals = metrika.byCampaign[key] || tdmeEmptyMetrikaGoals_();
+
+    row.goals.purchase = goals.purchase;
+    row.goals.talkMeOnline = goals.talkMeOnline;
+    row.goals.calls = goals.calls;
+  });
+
+  if (tdmeHasMetrikaGoals_(metrika.noCampaign)) {
+    rows.push(tdmeBuildMetrikaNoCampaignRow_(metrika.noCampaign));
+  }
+}
   const metrika = tdmeFetchMetrikaAutomaticGoalsByCampaign_(dateFrom, dateTo);
 
   rows.forEach(row => {
