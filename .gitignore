@@ -1,4 +1,5 @@
 .clasprc.json
+.clasp.json
 node_modules/
 .env
 client_secret.json
