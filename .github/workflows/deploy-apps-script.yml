@@ -10,9 +10,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    env:
-      APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyps2UeQfPUHulMyakbpRCa4eEQV6OlF-8gdX9fZ8AncFSI8FjiO829zYlcAwHYbjdmfw
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,22 +32,3 @@ jobs:
 
       - name: Push to Apps Script
         run: clasp push --force
-
-      - name: Create Apps Script version
-        id: version
-        run: |
-          VERSION_OUTPUT=$(clasp version "GitHub Actions deploy $GITHUB_SHA")
-          echo "$VERSION_OUTPUT"
-          VERSION_NUMBER=$(echo "$VERSION_OUTPUT" | grep -Eo '[0-9]+' | tail -1)
-          if [ -z "$VERSION_NUMBER" ]; then
-            echo "Could not parse Apps Script version number"
-            exit 1
-          fi
-          echo "version_number=$VERSION_NUMBER" >> "$GITHUB_OUTPUT"
-
-      - name: Update Web App deployment
-        run: |
-          clasp deploy \
-            --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" \
-            --versionNumber "${{ steps.version.outputs.version_number }}" \
-            --description "GitHub Actions deploy $GITHUB_SHA"
