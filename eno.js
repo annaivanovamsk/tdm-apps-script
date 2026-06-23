@@ -330,22 +330,6 @@ function tdmeApplyMetrikaAutomaticGoals_(rows, dateFrom, dateTo) {
     rows.push(tdmeBuildMetrikaNoCampaignRow_(metrika.noCampaign));
   }
 }
-  const metrika = tdmeFetchMetrikaAutomaticGoalsByCampaign_(dateFrom, dateTo);
-
-  rows.forEach(row => {
-    const key = tdmeCampaignKey_(row.campaignName);
-    const goals = metrika.byCampaign[key] || tdmeEmptyMetrikaGoals_();
-
-    // Эти три цели берём из Метрики по automaticTrafficSource, как в ДБ.
-    row.goals.purchase = goals.purchase;
-    row.goals.talkMeOnline = goals.talkMeOnline;
-    row.goals.calls = goals.calls;
-  });
-
-  if (tdmeHasMetrikaGoals_(metrika.noCampaign)) {
-    rows.push(tdmeBuildMetrikaNoCampaignRow_(metrika.noCampaign));
-  }
-}
 
 function tdmeFetchMetrikaAutomaticGoalsByCampaign_(dateFrom, dateTo) {
   let token =
