@@ -9,14 +9,18 @@ const SOURCES = {
 };
 
 /**
- * Один раз вставь сюда ID счетчика и токен, запусти функцию saveMetrikaSettings().
- * Потом можешь удалить токен из кода.
+ * Настройки Метрики хранятся только в Script Properties.
+ * OAuth-токены нельзя вставлять в исходный код.
  */
 function saveMetrikaSettings() {
-  PropertiesService.getScriptProperties().setProperties({
-    METRIKA_COUNTER_ID: '92370926',
-    METRIKA_TOKEN: 'y0__wgBEPjhu80IGJSdQiC1habSFzDO9aTVCHBMM2MrbYTQtMwQWgGMABTsU7yD'
-  });
+  // SECURITY_2026_07_07:
+  // Не храним OAuth-токены в исходниках. Токен должен быть только в Script Properties.
+  PropertiesService.getScriptProperties().setProperty('METRIKA_COUNTER_ID', '92370926');
+
+  const token = PropertiesService.getScriptProperties().getProperty('METRIKA_TOKEN');
+  if (!token) {
+    throw new Error('METRIKA_TOKEN не найден в Script Properties. Добавьте токен в безопасное хранилище, не в код.');
+  }
 }
 
 
@@ -26,7 +30,7 @@ function saveMetrikaSettings() {
  * Запустить один раз.
  * Создает лист, оформление, графики и еженедельный триггер.
  */
-function setupTrafficBehaviorReport() {
+function archived_setupTrafficBehaviorReport() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sh = ss.getSheetByName(TRAFFIC_SHEET_NAME);
 
@@ -49,23 +53,9 @@ function setupTrafficBehaviorReport() {
  * Ее можно запускать вручную и она же будет работать по понедельникам.
  */
 function updateTrafficBehaviorWeekly() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sh = ss.getSheetByName(TRAFFIC_SHEET_NAME) || ss.insertSheet(TRAFFIC_SHEET_NAME);
-
-  if (sh.getLastRow() < 5) {
-    drawTrafficTemplate_(sh);
-  }
-
-  const period = getPreviousWeekPeriod_();
-  const result = fetchMetrikaTraffic_(period.date1, period.date2);
-
-  writeCurrentWeek_(sh, period, result);
-  upsertHistory_(sh, period, result.rows);
-  rebuildHelperTables_(sh);
-  rebuildTrafficCharts_(sh);
-  writeTrafficConclusion_(sh, result.rows);
-
-  SpreadsheetApp.flush();
+  // TDM 2026-07-06: не пересоздаём лист и не меняем формат.
+  // Только обновляем текущую неделю и добавляем строку в старую таблицу динамики.
+  return tdmUpdateTrafficBehaviorLegacyOnly20260706();
 }
 
 
@@ -561,7 +551,7 @@ function writeTrafficConclusion_(sh, rows) {
 
 /***** ТРИГГЕР *****/
 
-function createTrafficWeeklyTrigger_() {
+function archived_createTrafficWeeklyTrigger_() {
   const functionName = 'updateTrafficBehaviorWeekly';
 
   ScriptApp.getProjectTriggers().forEach(trigger => {
@@ -663,4 +653,334 @@ function styleHeader_(range) {
     .setFontWeight('bold')
     .setHorizontalAlignment('center')
     .setBorder(true, true, true, true, true, true);
+}
+
+// ==========================================================
+// TDM 2026-07-06 — восстановление старого формата листа
+// «Поведение трафика». Важно: дальше не пересоздаём шаблон,
+// не трогаем форматирование и не строим новые графики.
+// ==========================================================
+
+function tdmUpdateTrafficBehaviorLegacyOnly20260706() {
+  return archived_tdmUpdateTrafficBehaviorLegacyOnly20260706();
+}
+
+function archived_tdmUpdateTrafficBehaviorLegacyOnly20260706() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(TRAFFIC_SHEET_NAME) || ss.insertSheet(TRAFFIC_SHEET_NAME);
+  const period = getPreviousWeekPeriod_();
+  const data = tdmTrafficLegacyFetchAllSources_(period.date1, period.date2);
+
+  tdmTrafficLegacyEnsureOldLayout_(sh);
+  tdmTrafficLegacyWriteCurrent_(sh, period, data);
+  tdmTrafficLegacyUpsertHistory_(sh, period, data);
+  tdmTrafficLegacyRestoreTotalsAndCharts20260706_(sh);
+
+  SpreadsheetApp.flush();
+  return { ok: true, sheet: TRAFFIC_SHEET_NAME, period: period.label };
+}
+
+function tdmTrafficLegacyFetchAllSources_(date1, date2) {
+  const props = PropertiesService.getScriptProperties();
+  const counterId = props.getProperty('METRIKA_COUNTER_ID');
+  const token = props.getProperty('METRIKA_TOKEN');
+
+  if (!counterId || !token) {
+    throw new Error('Не указан METRIKA_COUNTER_ID или METRIKA_TOKEN.');
+  }
+
+  const metrics = [
+    'ym:s:visits',
+    'ym:s:users',
+    'ym:s:avgVisitDurationSeconds',
+    'ym:s:bounceRate',
+    'ym:s:pageDepth',
+    'ym:s:newUsers'
+  ].join(',');
+
+  const params = {
+    ids: counterId,
+    date1: date1,
+    date2: date2,
+    metrics: metrics,
+    dimensions: 'ym:s:lastTrafficSource',
+    filters: "ym:s:isRobot=='No'",
+    accuracy: 'full',
+    lang: 'ru',
+    limit: 100
+  };
+
+  const url = 'https://api-metrika.yandex.net/stat/v1/data?' + toQueryString_(params);
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { Authorization: 'OAuth ' + token },
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() >= 300) {
+    throw new Error('Ошибка Метрики API: ' + response.getResponseCode() + ' — ' + response.getContentText());
+  }
+
+  const json = JSON.parse(response.getContentText());
+  const buckets = {
+    ad: tdmTrafficLegacyEmptyBucket_('Реклама'),
+    organic: tdmTrafficLegacyEmptyBucket_('Поиск'),
+    direct: tdmTrafficLegacyEmptyBucket_('Прямые заходы'),
+    referral: tdmTrafficLegacyEmptyBucket_('Рефералы'),
+    other: tdmTrafficLegacyEmptyBucket_('Прочие')
+  };
+
+  (json.data || []).forEach(function(item) {
+    const id = item.dimensions && item.dimensions[0] ? item.dimensions[0].id : 'other';
+    const key = buckets[id] ? id : 'other';
+    const m = item.metrics || [];
+    tdmTrafficLegacyAdd_(buckets[key], {
+      visits: Math.round(m[0] || 0),
+      users: Math.round(m[1] || 0),
+      avgTimeSec: Number(m[2] || 0),
+      bounceRate: Number(m[3] || 0),
+      pageDepth: Number(m[4] || 0),
+      newUsers: Math.round(m[5] || 0)
+    });
+  });
+
+  Object.keys(buckets).forEach(function(key) { tdmTrafficLegacyFinalize_(buckets[key]); });
+  const total = tdmTrafficLegacyEmptyBucket_('Итого');
+  Object.keys(buckets).forEach(function(key) { tdmTrafficLegacyAdd_(total, buckets[key]); });
+  tdmTrafficLegacyFinalize_(total);
+
+  return { buckets: buckets, total: total };
+}
+
+function tdmTrafficLegacyEnsureOldLayout_(sh) {
+  const currentTitle = String(sh.getRange('A1').getDisplayValue() || '');
+  if (currentTitle.indexOf('ПЕРИОД ОТЧЕТА') === 0) return;
+
+  sh.getCharts().forEach(function(chart) { sh.removeChart(chart); });
+  sh.getRange('A1:Z80').breakApart();
+  sh.getRange('A1:Z80').clearContent().clearFormat();
+
+  sh.setFrozenRows(5);
+  [160, 95, 115, 90, 90, 80, 130, 100, 120, 280, 280].forEach(function(width, i) {
+    sh.setColumnWidth(i + 1, width);
+  });
+
+  sh.getRange('A2').setValue('Источник: Яндекс.Метрика. Отчёт показывает качество трафика, лиды и CPA остаются в ДБ / ЕНО / ЕМО.');
+  sh.getRange('A4').setValue('ИСТОЧНИКИ ');
+  sh.getRange('A5:K5').setValues([['Источник','Визиты','Пользователи','Ср. время','Отказы','Глубина','Новые пользователи','Доля визитов','Оценка','Что видно','Что проверить']]);
+  sh.getRange('A13').setValue('ДИНАМИКА ПО НЕДЕЛЯМ  РЕКЛАМНЫЙ ИСТОЧНИК');
+  sh.getRange('A14:J14').setValues([['Неделя','Реклама визиты','Реклама отказы','Реклама глубина','Поиск визиты','Поиск отказы','Поиск глубина','Прямые визиты','Прямые отказы','Прямые глубина']]);
+  sh.getRange('A21').setValue('КОРОТКИЙ ВЫВОД ПО ДИНАМИКЕ');
+  sh.getRange('A22:B25').setValues([
+    ['Реклама','Рекламный трафик даёт стабильный объём, но по качеству пока уступает поиску: глубина ниже, отказы выше. Нужно держать под контролем запросы, площадки и посадочные страницы.'],
+    ['Поиск','Поисковый трафик качественнее рекламы: пользователи смотрят больше страниц и реже уходят сразу. Это хороший ориентир по качеству аудитории.'],
+    ['Прямые заходы','Прямых заходов стабильно много уже несколько недель, но качество слабое: высокий отказ и короткие визиты. Нужно проверить, нет ли неразмеченных переходов, технического трафика или потери источника.'],
+    ['Что делаем','По рекламе — контролируем качество трафика. По прямым заходам — проверяем разметку, редиректы, ботов и внутренние переходы. По поиску — используем как ориентир хорошего поведения.']
+  ]);
+
+  sh.getRange('A1').setFontWeight('bold').setFontSize(12);
+  sh.getRange('A4').setFontWeight('bold');
+  sh.getRange('A13').setFontWeight('bold');
+  sh.getRange('A21').setFontWeight('bold');
+  sh.getRange('A5:K5').setFontWeight('bold').setBackground('#d9ead3').setWrap(true);
+  sh.getRange('A14:J14').setFontWeight('bold').setBackground('#d9ead3').setWrap(true);
+  sh.getRange('A6:K11').setWrap(true);
+  sh.getRange('A22:B25').setWrap(true);
+
+  sh.getRange('A15:J19').setValues([
+    ['25.05–31.05',2421,'41,76%','1,57',637,'26,06%','1,83',3909,'74,83%','1,06'],
+    ['01.06–07.06',2950,'37,63%','1,39',616,'27,27%','2,09',3228,'73,70%','1,03'],
+    ['08.06–14.06',2428,'42,22%','1,44',650,'24,77%','2,78',3208,'72,13%','1,03'],
+    ['15.06–21.06',1596,'38,28%','1,68',801,'29,96%','1,93',3183,'70,75%','1,05'],
+    ['22.06–28.06',2129,'41,19%','1,47',674,'32,79%','2,09',3480,'72,36%','1,04']
+  ]);
+}
+
+function tdmTrafficLegacyWriteCurrent_(sh, period, data) {
+  const b = data.buckets;
+  const total = data.total;
+  sh.getRange('A1').setValue('ПЕРИОД ОТЧЕТА: ' + period.label + ' (обновляется каждый понедельник)');
+
+  const rows = [b.ad, b.organic, b.direct, b.referral, b.other].map(function(item) {
+    return [
+      item.source,
+      item.visits,
+      item.users,
+      secondsToText_(item.avgTimeSec),
+      formatPercentText_(item.bounceRate),
+      Number(item.pageDepth || 0).toFixed(2).replace('.', ','),
+      item.newUsers,
+      total.visits ? formatPercentText_(item.visits / total.visits * 100) : '0,00%',
+      tdmTrafficLegacyGrade_(item),
+      tdmTrafficLegacySeen_(item),
+      tdmTrafficLegacyCheck_(item)
+    ];
+  });
+
+  rows.push(['Итого', total.visits, total.users, '—', '—', '—', total.newUsers, '100,00%', '', '', '']);
+  sh.getRange('A6:K11').setValues(rows);
+  sh.getRange('A11:K11').setFontWeight('bold');
+}
+
+function tdmTrafficLegacyUpsertHistory_(sh, period, data) {
+  const label = tdmTrafficLegacyShortLabel_(period.label);
+  const b = data.buckets;
+  const rowValues = [
+    String(label),
+    formatNumber_(b.ad.visits), formatPercentText_(b.ad.bounceRate), Number(b.ad.pageDepth || 0).toFixed(2).replace('.', ','),
+    formatNumber_(b.organic.visits), formatPercentText_(b.organic.bounceRate), Number(b.organic.pageDepth || 0).toFixed(2).replace('.', ','),
+    formatNumber_(b.direct.visits), formatPercentText_(b.direct.bounceRate), Number(b.direct.pageDepth || 0).toFixed(2).replace('.', ',')
+  ];
+
+  let conclusionRow = tdmTrafficLegacyFindRow_(sh, 'КОРОТКИЙ ВЫВОД ПО ДИНАМИКЕ') || 21;
+  let targetRow = 0;
+  for (let row = 15; row < conclusionRow; row++) {
+    if (String(sh.getRange(row, 1).getDisplayValue()).trim() === label) {
+      targetRow = row;
+      break;
+    }
+  }
+
+  if (!targetRow) {
+    targetRow = conclusionRow;
+    sh.insertRowBefore(conclusionRow);
+    conclusionRow++;
+  }
+
+  sh.getRange(targetRow, 1, 1, 10).setNumberFormat('@');
+  sh.getRange(targetRow, 1, 1, 10).setValues([rowValues]);
+}
+
+function tdmTrafficLegacyFindRow_(sh, text) {
+  const values = sh.getRange('A1:A80').getDisplayValues();
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0] || '').trim() === text) return i + 1;
+  }
+  return 0;
+}
+
+function tdmTrafficLegacyEmptyBucket_(source) {
+  return { source: source, visits: 0, users: 0, newUsers: 0, avgTimeWeighted: 0, bounceWeighted: 0, depthWeighted: 0, avgTimeSec: 0, bounceRate: 0, pageDepth: 0 };
+}
+
+function tdmTrafficLegacyAdd_(target, item) {
+  const visits = Number(item.visits || 0);
+  target.visits += visits;
+  target.users += Number(item.users || 0);
+  target.newUsers += Number(item.newUsers || 0);
+  target.avgTimeWeighted += Number(item.avgTimeSec || 0) * visits;
+  target.bounceWeighted += Number(item.bounceRate || 0) * visits;
+  target.depthWeighted += Number(item.pageDepth || 0) * visits;
+}
+
+function tdmTrafficLegacyFinalize_(target) {
+  if (!target.visits) return;
+  target.avgTimeSec = target.avgTimeWeighted / target.visits;
+  target.bounceRate = target.bounceWeighted / target.visits;
+  target.pageDepth = target.depthWeighted / target.visits;
+}
+
+function tdmTrafficLegacyShortLabel_(label) {
+  return String(label || '').replace(/\.\d{4}$/, '');
+}
+
+function tdmTrafficLegacyGrade_(item) {
+  if (!item.visits) return 'Наблюдать';
+  if (item.bounceRate <= 35 && item.pageDepth >= 1.8) return 'Хорошо';
+  if (item.bounceRate >= 60 || item.pageDepth < 1.2) return 'Плохо';
+  return 'Средне';
+}
+
+function tdmTrafficLegacySeen_(item) {
+  if (!item.visits) return 'Малый объём, выводы не делаем.';
+  if (item.source === 'Реклама') return 'Рекламный трафик обновлён за неделю; контролируем отказы, глубину и соответствие посадочных.';
+  if (item.source === 'Поиск') return 'Поисковый трафик используем как ориентир качества аудитории.';
+  if (item.source === 'Прямые заходы') return 'Прямые заходы держим под контролем: возможны неразмеченные переходы или технический трафик.';
+  return 'Источник учитываем в общей динамике качества трафика.';
+}
+
+function tdmTrafficLegacyCheck_(item) {
+  if (item.source === 'Реклама') return 'Проверить поисковые запросы, РСЯ-площадки, объявления и посадочные.';
+  if (item.source === 'Поиск') return 'Смотреть страницы входа и темы, которые дают вовлечённость.';
+  if (item.source === 'Прямые заходы') return 'Проверить разметку, редиректы, ботов и внутренние переходы.';
+  return 'Не делать выводы по малой базе, мониторить динамику.';
+}
+
+function archived_tdmTrafficLegacyRestoreTotalsAndCharts20260706_(sh) {
+  // ИТОГО — только формулами, не значениями.
+  sh.getRange('B11').setFormula('=SUM(B6:B10)');
+  sh.getRange('C11').setFormula('=SUM(C6:C10)');
+  sh.getRange('G11').setFormula('=SUM(G6:G10)');
+  sh.getRange('H11').setFormula('=IFERROR(SUM(B6:B10)/B11;0)');
+  sh.getRange('H11').setNumberFormat('0.00%');
+
+  // Графики строим через скрытую служебную область, основной формат листа не трогаем.
+  const helperCol = 25; // Y
+  sh.getRange(1, helperCol, 80, 12).clearContent();
+
+  const raw = sh.getRange('A15:J20').getDisplayValues().filter(function(row) {
+    return String(row[0] || '').trim();
+  });
+
+  // На графиках оставляем только рекламный трафик. Поиск и direct не выводим.
+  const visits = [['Неделя', 'Реклама']];
+  const bounce = [['Неделя', 'Реклама']];
+  const depth = [['Неделя', 'Реклама']];
+
+  raw.forEach(function(row) {
+    visits.push([row[0], tdmTrafficLegacyNum_(row[1])]);
+    bounce.push([row[0], tdmTrafficLegacyPctNum_(row[2])]);
+    depth.push([row[0], tdmTrafficLegacyNum_(row[3])]);
+  });
+
+  sh.getRange(1, helperCol, visits.length, 2).setValues(visits);
+  sh.getRange(12, helperCol, bounce.length, 2).setValues(bounce);
+  sh.getRange(23, helperCol, depth.length, 2).setValues(depth);
+  sh.getRange(13, helperCol + 1, Math.max(bounce.length - 1, 1), 1).setNumberFormat('0.00%');
+
+  sh.getCharts().forEach(function(chart) { sh.removeChart(chart); });
+  tdmTrafficLegacyInsertLineChart_(sh, sh.getRange(1, helperCol, visits.length, 2), 'Реклама: визиты по неделям', 4, 13);
+  tdmTrafficLegacyInsertLineChart_(sh, sh.getRange(12, helperCol, bounce.length, 2), 'Реклама: отказы по неделям', 19, 13);
+  tdmTrafficLegacyInsertLineChart_(sh, sh.getRange(23, helperCol, depth.length, 2), 'Реклама: глубина просмотра', 34, 13);
+
+  try { sh.hideColumns(helperCol, 12); } catch (e) {}
+}
+
+function tdmTrafficLegacyInsertLineChart_(sh, range, title, row, col) {
+  const chart = sh.newChart()
+    .setChartType(Charts.ChartType.LINE)
+    .addRange(range)
+    .setPosition(row, col, 0, 0)
+    .setOption('title', title)
+    .setOption('legend', { position: 'bottom' })
+    .setOption('width', 520)
+    .setOption('height', 260)
+    .build();
+  sh.insertChart(chart);
+}
+
+function tdmTrafficLegacyNum_(value) {
+  const text = String(value || '').replace(/\u00a0/g, '').replace(/\s/g, '').replace(',', '.').replace(/[^\d.\-]/g, '');
+  const n = Number(text);
+  return isNaN(n) ? 0 : n;
+}
+
+function tdmTrafficLegacyPctNum_(value) {
+  return tdmTrafficLegacyNum_(value) / 100;
+}
+
+function archived_tdmFixTrafficRow20Format20260706() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName('Поведение трафика');
+  if (!sh) throw new Error('Не найден лист Поведение трафика');
+
+  // Только формат строки 20 как у предыдущей строки динамики. Значения не трогаем.
+  sh.getRange('A19:J19').copyTo(
+    sh.getRange('A20:J20'),
+    SpreadsheetApp.CopyPasteType.PASTE_FORMAT,
+    false
+  );
+  sh.setRowHeight(20, sh.getRowHeight(19));
+
+  return { ok: true, sheet: 'Поведение трафика', formattedRange: 'A20:J20', copiedFrom: 'A19:J19' };
 }

@@ -1,1236 +1,2378 @@
-// VAG-House DB monthly block from May template v04.1
-// Файл для Apps Script. Вставляй в отдельный файл, например db_month_v04.gs.
-// Код создаёт/пересобирает месячный блок ДБ на основе форматирования майского блока и заполняет:
-// 1) показы/клики/расход из Директа;
-// 2) цели из Метрики по логике ЕНО, чтобы совпадало с Метрикой;
-// 3) Факт сумма конверсий = Звонки_Уник - ЮИС + Заявки Юис.
+// =====================
+// ТДМ — ДБ ежедневный отчёт
+// Файл: db.gs
+// Версия v21_prev_structure_april_format
+// =====================
 //
-// Что запускать:
-// createDbJune2026FromMayTemplate_v4() — создать/пересобрать июнь 2026 с форматированием как в мае, с верхним блоком формул и чёрными границами.
-// createDbCurrentMonthFromMayTemplate_v4() — создать/пересобрать текущий месяц с форматированием как в мае.
-// checkDbMetrikaAccess_v4() — проверить доступ к Метрике.
+// ОБЩЕЕ ПРАВИЛО ДЛЯ ОТЧЁТОВ:
+// - Новый месяц вставляем после предыдущего месяца.
+// - Структуру нового месяца берём из предыдущего месяца.
+// - Оформление строк дат берём из Апрель 2026, там корректное оформление.
+// - Формулы не перезаписываем значениями.
+// - Исключение: плановая колонка "Расход План c НДС" при создании месяца очищается и заполняется новыми формулами.
+// - Строка ИТОГО всегда тянется до последнего дня текущего месяца.
+// - Рабочие дни без заливки, выходные/праздники — как в апрельском шаблоне.
+// - Расход План c НДС: формула только в рабочие дни, делитель = количество рабочих дней.
+// - Деньги отображаем через "р.", без символа ₽.
+// =====================
 
-const DB_VAG_V04_CONFIG = {
-  SHEET_NAME: 'ДБ',
-  CLIENT_LOGIN: 'vag-house98',
-  TIMEZONE: 'Europe/Moscow',
-  MONTH_BUDGET: 180000,
-  METRIKA_COUNTER_ID: '99052519',
-  METRIKA_ATTRIBUTION: 'automatic',
-  DIRECT_ATTRIBUTION_MODEL: 'AUTO',
-  UIS_TOKEN_PROPERTY: 'UIS_TOKEN',
-  UIS_API_URL: 'https://dataapi.uiscom.ru/v2.0',
-  UIS_QUALITY_VALUE: 'Качественные',
-  PROTECTED_ROWS: {
-    SKIP_ROW: 234,
-    SKIP_FROM_ROW: 242
+
+// =====================
+// ПУБЛИЧНЫЕ ФУНКЦИИ
+// В выпадающем списке будут только они.
+// =====================
+
+function fillTdmDbYesterday() {
+  TDM_DB.fillYesterday();
+}
+
+function fillTdmDbToYesterday() {
+  TDM_DB.fillToYesterday();
+}
+
+function fillTdmDbTestOneDay() {
+  TDM_DB.fillTestOneDay();
+}
+
+// Удали блок Июнь 2026 вручную и запусти эту функцию.
+function createTdmDbJune2026Block() {
+  TDM_DB.createOrFixMonth('2026-06-01');
+}
+
+function archived_createTdmDbTrigger8am() {
+  TDM_DB.createTrigger8am();
+}
+
+function deleteTdmDbTrigger() {
+  TDM_DB.deleteTrigger();
+}
+
+
+// =====================
+// ВНУТРЕННИЙ МОДУЛЬ
+// =====================
+
+const TDM_DB = {
+  config: {
+    clientLogin: 'ilhaleontj3v',
+    sheetName: 'ДБ',
+    timezone: 'Europe/Moscow',
+
+    startDate: '2026-05-01',
+    testDate: '2026-05-31',
+
+    // Эталон оформления и структуры для новых месяцев.
+    templateMonthDate: '2026-04-01',
+
+    // План бюджета с НДС для новых месяцев.
+    monthPlanWithVat: 210000,
+
+    // Праздники / нерабочие дни.
+    holidays: [
+      '2026-06-12'
+    ],
+
+    goals: {
+      view3Pages: ['453453800'],      // Просмотр 3х страниц — микроцель
+      siteSearch: ['410522803'],      // Поиск по сайту — микроцель
+      addToCart: ['504318736'],       // Ecommerce: добавление в корзину
+      purchase: ['504318735'],        // Ecommerce: покупка — факт
+      jivo: ['575188424'],            // Jivo-сайт: пользователь начал чат — факт
+      callibriSpam: [],               // Callibri: Спам — источник пока не подключён
+      callibriNonTarget: [],          // Callibri: Нецелевой_Лид — источник пока не подключён
+      callibriLeadA: [],              // Callibri: Лид_Квал_A — источник пока не подключён
+      callibriLeadC: []               // Callibri: Лид_Квал_C — источник пока не подключён
+    }
   },
-  START_COLUMN: 2, // B
-  TABLE_WIDTH: 20, // B:U
-  CLEAR_ROWS: 80,
-  GOALS: {
-    bb60sec2pages: '555861179',    // I — B-B_60сек+2стр
-    phone8835: '511787501',        // J — Клик на 79110008835
-    phone8865: '511788019',        // K — Клик на 79110008865
-    max: '511788150',              // L — Клик на Макс
-    telegramSlider: '511791937',   // M — Успешно пройден слайдер для перехода в TG
-    route: '547214611'             // N — Клик по кнопке "Маршрут"
+
+
+  // =====================
+  // ЗАПУСКИ
+  // =====================
+
+  fillYesterday() {
+    const yesterday = this.getYesterday_();
+    this.fillPeriod_(yesterday, yesterday);
+  },
+
+  fillToYesterday() {
+    const yesterday = this.getYesterday_();
+    this.fillPeriod_(this.config.startDate, yesterday);
+  },
+
+  fillTestOneDay() {
+    this.fillPeriod_(this.config.testDate, this.config.testDate);
+  },
+
+  createOrFixMonth(apiDate) {
+    const sheet = this.getSheet_();
+
+    this.ensureMonthBlock_(sheet, apiDate);
+    this.fixExistingMonthBlock_(sheet, apiDate);
+    this.validateMonth_(sheet, apiDate);
+
+    this.safeMessage_('Блок ' + this.monthTitle_(apiDate) + ' создан / исправлен.');
+  },
+
+  createTrigger8am() {
+    this.deleteTrigger();
+
+    ScriptApp.newTrigger('fillTdmDbYesterday')
+      .timeBased()
+      .everyDays(1)
+      .atHour(8)
+      .inTimezone(this.config.timezone)
+      .create();
+
+    this.safeMessage_('Триггер ДБ поставлен: каждый день около 08:00 по Москве.');
+  },
+
+  deleteTrigger() {
+    const triggers = ScriptApp.getProjectTriggers();
+
+    triggers.forEach(trigger => {
+      if (trigger.getHandlerFunction() === 'fillTdmDbYesterday') {
+        ScriptApp.deleteTrigger(trigger);
+      }
+    });
+
+    this.safeMessage_('Триггеры ДБ удалены.');
+  },
+
+
+  // =====================
+  // ЗАПОЛНЕНИЕ ДАННЫХ
+  // =====================
+
+  fillPeriod_(dateFrom, dateTo) {
+    const sheet = this.getSheet_();
+    const rowsByDate = this.loadDirectDailyRows_(dateFrom, dateTo);
+    const dates = this.getDateRange_(dateFrom, dateTo);
+
+    dates.forEach(apiDate => {
+      this.ensureMonthBlock_(sheet, apiDate);
+
+      const headerRow = this.findHeaderRowForMonth_(sheet, apiDate);
+      const headerMap = this.getHeaderMap_(sheet, headerRow);
+      const sheetRow = this.findDateRow_(sheet, headerMap.date, headerRow, apiDate);
+
+      if (!sheetRow) {
+        Logger.log('Дата не найдена в ДБ: ' + apiDate);
+        return;
+      }
+
+      const item = rowsByDate[apiDate] || this.emptyRow_();
+
+      this.setNumberCell_(sheet, sheetRow, headerMap.impressions, item.impressions);
+      this.setNumberCell_(sheet, sheetRow, headerMap.clicks, item.clicks);
+      this.setNumberCell_(sheet, sheetRow, headerMap.cost, item.cost);
+
+      this.setGoalCell_(sheet, sheetRow, headerMap.view3Pages, item.view3Pages);
+      this.setGoalCell_(sheet, sheetRow, headerMap.siteSearch, item.siteSearch);
+      this.setExternalGoalCellIfConfigured_(sheet, sheetRow, headerMap.callibriSpam, item.callibriSpam, this.config.goals.callibriSpam);
+      this.setExternalGoalCellIfConfigured_(sheet, sheetRow, headerMap.callibriNonTarget, item.callibriNonTarget, this.config.goals.callibriNonTarget);
+      this.setGoalCell_(sheet, sheetRow, headerMap.addToCart, item.addToCart);
+      this.setGoalCell_(sheet, sheetRow, headerMap.purchase, item.purchase);
+      this.setGoalCell_(sheet, sheetRow, headerMap.jivo, item.jivo);
+      this.setExternalGoalCellIfConfigured_(sheet, sheetRow, headerMap.callibriLeadA, item.callibriLeadA, this.config.goals.callibriLeadA);
+      this.setExternalGoalCellIfConfigured_(sheet, sheetRow, headerMap.callibriLeadC, item.callibriLeadC, this.config.goals.callibriLeadC);
+    });
+
+    Logger.log('ДБ заполнен за период: ' + dateFrom + ' — ' + dateTo);
+  },
+
+
+  // =====================
+  // СОЗДАНИЕ МЕСЯЦА
+  // =====================
+
+  ensureMonthBlock_(sheet, apiDate) {
+    const monthTitle = this.monthTitle_(apiDate);
+
+    if (this.monthExists_(sheet, monthTitle)) {
+      return;
+    }
+
+    // Вставляем после предыдущего месяца.
+    const prevMonthDate = this.addMonths_(apiDate, -1);
+    const prevMonthTitle = this.monthTitle_(prevMonthDate);
+    const prevTopRow = this.findMonthTopRow_(sheet, prevMonthTitle);
+    const prevBottomRow = this.findMonthBottomRow_(sheet, prevTopRow);
+
+    // Копируем структуру из предыдущего месяца.
+    // Так не подтягиваются старые лишние колонки из апреля, например Roistat Email / Roistat звонки.
+    const templateTitle = prevMonthTitle;
+    const templateTopRow = prevTopRow;
+    const templateBottomRow = prevBottomRow;
+
+    const copyRows = templateBottomRow - templateTopRow + 1;
+    const lastCol = sheet.getLastColumn();
+
+    // Между месяцами оставляем 1 пустую строку.
+    const rowAfterPrevBlock = prevBottomRow + 1;
+
+    if (!this.isRowEmpty_(sheet, rowAfterPrevBlock, lastCol)) {
+      sheet.insertRowsAfter(prevBottomRow, 1);
+    }
+
+    const blankRow = prevBottomRow + 1;
+
+    if (sheet.getMaxRows() < blankRow + copyRows + 5) {
+      sheet.insertRowsAfter(
+        sheet.getMaxRows(),
+        blankRow + copyRows + 5 - sheet.getMaxRows()
+      );
+    }
+
+    sheet.insertRowsAfter(blankRow, copyRows);
+
+    const destTopRow = blankRow + 1;
+
+    sheet
+      .getRange(templateTopRow, 1, copyRows, lastCol)
+      .copyTo(
+        sheet.getRange(destTopRow, 1, copyRows, lastCol),
+        SpreadsheetApp.CopyPasteType.PASTE_NORMAL,
+        false
+      );
+
+    this.prepareCopiedMonthBlock_(sheet, destTopRow, copyRows, apiDate, templateTitle);
+  },
+
+  prepareCopiedMonthBlock_(sheet, destTopRow, copyRows, apiDate, templateTitle) {
+    const monthTitle = this.monthTitle_(apiDate);
+    const templateTitleNorm = this.normalize_(templateTitle);
+    const daysInMonth = this.daysInMonth_(apiDate);
+    const monthStart = this.monthStartApi_(apiDate);
+    const monthEnd = this.monthEndApi_(apiDate);
+    const lastCol = sheet.getLastColumn();
+
+    // Переименовываем месяц во всём скопированном блоке.
+    const blockRange = sheet.getRange(destTopRow, 1, copyRows, lastCol);
+    const displayValues = blockRange.getDisplayValues();
+
+    for (let r = 0; r < displayValues.length; r++) {
+      for (let c = 0; c < displayValues[r].length; c++) {
+        if (this.normalize_(displayValues[r][c]) === templateTitleNorm) {
+          const cell = sheet.getRange(destTopRow + r, c + 1);
+
+          if (!cell.getFormula()) {
+            cell.setValue(monthTitle);
+          }
+        }
+      }
+    }
+
+    this.updateMonthSettings_(sheet, destTopRow, copyRows, monthStart, monthEnd, daysInMonth);
+
+    const headerRow = this.findHeaderRowForMonth_(sheet, apiDate);
+    const headerMap = this.getHeaderMap_(sheet, headerRow);
+
+    this.clearObsoleteLegacyGoalColumns_(sheet, headerRow, headerMap.date);
+    this.updateBudgetCells_(sheet, destTopRow, copyRows, headerMap);
+
+    let totalRow = this.findTotalRow_(sheet, headerRow, headerMap.date);
+    let dataStartRow = this.findFirstDateRow_(sheet, headerMap.date, headerRow, totalRow) || headerRow + 1;
+
+    let existingDataRows = totalRow - dataStartRow;
+
+    // Подгоняем количество строк дат под текущий месяц.
+    if (existingDataRows > daysInMonth) {
+      sheet.deleteRows(dataStartRow + daysInMonth, existingDataRows - daysInMonth);
+    }
+
+    if (existingDataRows < daysInMonth) {
+      const rowsToAdd = daysInMonth - existingDataRows;
+      totalRow = this.findTotalRow_(sheet, headerRow, headerMap.date);
+
+      sheet.insertRowsBefore(totalRow, rowsToAdd);
+
+      const sourceRow = Math.max(dataStartRow, totalRow - 1);
+
+      sheet
+        .getRange(sourceRow, 1, 1, lastCol)
+        .copyTo(
+          sheet.getRange(totalRow, 1, rowsToAdd, lastCol),
+          SpreadsheetApp.CopyPasteType.PASTE_NORMAL,
+          false
+        );
+    }
+
+    totalRow = this.findTotalRow_(sheet, headerRow, headerMap.date);
+    dataStartRow = this.findFirstDateRow_(sheet, headerMap.date, headerRow, totalRow) || headerRow + 1;
+
+    const dataEndRow = dataStartRow + daysInMonth - 1;
+
+    // Даты месяца.
+    const startDate = this.parseApiDate_(monthStart);
+
+    for (let i = 0; i < daysInMonth; i++) {
+      const row = dataStartRow + i;
+      const date = new Date(startDate);
+      date.setDate(startDate.getDate() + i);
+
+      const dateCell = sheet.getRange(row, headerMap.date);
+      dateCell.clearContent();
+      dateCell.setValue(date);
+      dateCell.setNumberFormat('dd.MM.yy');
+    }
+
+    this.clearInputCells_(sheet, headerMap, dataStartRow, daysInMonth);
+    this.updatePlanColumn_(sheet, headerMap, destTopRow, dataStartRow, daysInMonth, apiDate);
+    this.fixTotalRowFormulaRanges_(sheet, totalRow, dataStartRow, dataEndRow);
+    this.applyFormattingFromTemplate_(sheet, headerMap, dataStartRow, daysInMonth, apiDate);
+    this.updatePlanColumn_(sheet, headerMap, destTopRow, dataStartRow, daysInMonth, apiDate);
+  },
+
+  fixExistingMonthBlock_(sheet, apiDate) {
+    const monthTitle = this.monthTitle_(apiDate);
+    const monthTopRow = this.findMonthTopRow_(sheet, monthTitle);
+    const headerRow = this.findHeaderRowForMonth_(sheet, apiDate);
+    const headerMap = this.getHeaderMap_(sheet, headerRow);
+
+    this.clearObsoleteLegacyGoalColumns_(sheet, headerRow, headerMap.date);
+    this.updateBudgetCells_(sheet, monthTopRow, 120, headerMap);
+
+    const totalRow = this.findTotalRow_(sheet, headerRow, headerMap.date);
+    const dataStartRow = this.findFirstDateRow_(sheet, headerMap.date, headerRow, totalRow) || headerRow + 1;
+    const daysInMonth = this.daysInMonth_(apiDate);
+    const dataEndRow = dataStartRow + daysInMonth - 1;
+
+    this.updatePlanColumn_(sheet, headerMap, monthTopRow, dataStartRow, daysInMonth, apiDate);
+    this.fixTotalRowFormulaRanges_(sheet, totalRow, dataStartRow, dataEndRow);
+    this.applyFormattingFromTemplate_(sheet, headerMap, dataStartRow, daysInMonth, apiDate);
+    this.updatePlanColumn_(sheet, headerMap, monthTopRow, dataStartRow, daysInMonth, apiDate);
+  },
+
+
+
+  clearObsoleteLegacyGoalColumns_(sheet, headerRow, dateCol) {
+    const lastCol = sheet.getLastColumn();
+    const headers = sheet.getRange(headerRow, 1, 1, lastCol).getDisplayValues()[0];
+
+    const colsToClear = [];
+
+    headers.forEach((header, index) => {
+      const key = this.normalize_(header);
+
+      if (key === 'roistat email' || key === 'roistat звонки') {
+        colsToClear.push(index + 1);
+      }
+    });
+
+    if (!colsToClear.length) return;
+
+    const totalRow = this.findTotalRow_(sheet, headerRow, dateCol);
+    const numRows = totalRow - headerRow + 1;
+
+    colsToClear.forEach(col => {
+      // Не удаляем столбцы физически, чтобы не сдвинуть весь лист.
+      // Очищаем только этот месячный блок.
+      sheet.getRange(headerRow, col, numRows, 1)
+        .clearContent()
+        .setBackground('#ffffff')
+        .setBorder(false, false, false, false, false, false);
+    });
+  },
+
+  // =====================
+  // НАСТРОЙКИ МЕСЯЦА / БЮДЖЕТ
+  // =====================
+
+  updateMonthSettings_(sheet, destTopRow, copyRows, monthStart, monthEnd, daysInMonth) {
+    const maxCol = Math.min(sheet.getLastColumn(), 8);
+
+    for (let row = destTopRow; row < destTopRow + copyRows; row++) {
+      const values = sheet.getRange(row, 1, 1, maxCol).getDisplayValues()[0];
+      const normalized = values.map(value => this.normalize_(value));
+
+      const labelIndex = normalized.findIndex(value => {
+        return value === 'период рк' ||
+          value === 'дней всего' ||
+          value === 'дней прошло' ||
+          value === 'остаток' ||
+          value === 'дата отчета';
+      });
+
+      if (labelIndex === -1) continue;
+
+      const label = normalized[labelIndex];
+      const labelCol = labelIndex + 1;
+
+      if (label === 'период рк') {
+        this.setIfNoFormula_(sheet, row, labelCol + 1, this.parseApiDate_(monthStart), 'dd.MM.yy');
+        this.setIfNoFormula_(sheet, row, labelCol + 2, this.parseApiDate_(monthEnd), 'dd.MM.yy');
+      }
+
+      if (label === 'дней всего') {
+        this.setIfNoFormula_(sheet, row, labelCol + 1, daysInMonth, null);
+      }
+
+      if (label === 'дней прошло') {
+        this.setIfNoFormula_(sheet, row, labelCol + 1, this.daysPassedForMonth_(monthStart), null);
+      }
+
+      if (label === 'остаток') {
+        const passed = this.daysPassedForMonth_(monthStart);
+        this.setIfNoFormula_(sheet, row, labelCol + 1, Math.max(daysInMonth - passed, 0), null);
+      }
+
+      if (label === 'дата отчета') {
+        this.setIfNoFormula_(sheet, row, labelCol + 1, new Date(), 'dd.MM.yy');
+      }
+    }
+  },
+
+  updateBudgetCells_(sheet, destTopRow, copyRows, headerMap) {
+    const maxCol = Math.min(sheet.getLastColumn(), 12);
+    const monthPlan = this.config.monthPlanWithVat;
+    const plannedCostCol = headerMap && headerMap.plannedCost ? headerMap.plannedCost : 0;
+
+    for (let row = destTopRow; row < destTopRow + copyRows; row++) {
+      const values = sheet.getRange(row, 1, 1, maxCol).getDisplayValues()[0];
+      const normalized = values.map(value => this.normalize_(value));
+
+      for (let i = 0; i < normalized.length; i++) {
+        const text = normalized[i];
+
+        // Верхняя строка "Бюджет с НДС": ставим бюджет строго справа от подписи.
+        if (text.indexOf('бюджет') !== -1 && text.indexOf('ндс') !== -1) {
+          const targetCol = i + 2;
+          this.setBudgetCell_(sheet, row, targetCol, monthPlan);
+        }
+
+        // Строка "ПЛАН по МП": бюджет ставим в колонку "Расход План c НДС".
+        if (text === 'план по мп') {
+          const targetCol = plannedCostCol || 5;
+          this.setBudgetCell_(sheet, row, targetCol, monthPlan);
+        }
+      }
+    }
+  },
+
+  setBudgetCell_(sheet, row, col, value) {
+    const cell = sheet.getRange(row, col);
+    cell.clearContent();
+    cell.setValue(value);
+    cell.setNumberFormat('"р." #,##0.00');
+  },
+
+  fixMonthTitleBeforeTable_(sheet, headerRow, dateCol, monthTitle) {
+    const titleRow = headerRow - 3;
+    const col = dateCol && dateCol > 0 ? dateCol : 2;
+
+    if (titleRow <= 0) return;
+
+    const cell = sheet.getRange(titleRow, col);
+
+    if (!cell.getFormula()) {
+      cell.setValue(monthTitle);
+    }
+  },
+
+  updatePlanColumn_(sheet, headerMap, monthTopRow, dataStartRow, daysInMonth, apiDate) {
+    let col = headerMap.plannedCost;
+
+    if (!col || col <= 0) {
+      col = this.findPlannedCostColumnFallback_(sheet, dataStartRow);
+    }
+
+    if (!col || col <= 0) {
+      Logger.log('Колонка "Расход План c НДС" не найдена.');
+      return;
+    }
+
+    const formulaParts = this.findPlanFormulaParts_(sheet, monthTopRow, col);
+
+    if (!formulaParts) {
+      Logger.log('Не нашла ячейку "ПЛАН по МП" для формулы Расход План c НДС.');
+      return;
+    }
+
+    const workingDays = this.countWorkingDays_(apiDate);
+    const monthStart = this.parseApiDate_(this.monthStartApi_(apiDate));
+
+    for (let i = 0; i < daysInMonth; i++) {
+      const row = dataStartRow + i;
+      const date = new Date(monthStart);
+      date.setDate(monthStart.getDate() + i);
+
+      const api = this.formatDate_(date, 'yyyy-MM-dd');
+      const cell = sheet.getRange(row, col);
+
+      cell.clearContent();
+
+      if (workingDays > 0 && this.isWorkingDay_(date, api)) {
+        cell.setFormula(
+          '=' +
+          '$' + this.columnToLetter_(formulaParts.planCol) + '$' + formulaParts.planRow +
+          '/' +
+          workingDays
+        );
+        cell.setNumberFormat('"р." #,##0.00');
+      }
+    }
+  },
+
+
+  // =====================
+  // ПОИСКИ ПО ЛИСТУ
+  // =====================
+
+  getSheet_() {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(this.config.sheetName);
+
+    if (!sheet) {
+      throw new Error('Не найден лист: ' + this.config.sheetName);
+    }
+
+    return sheet;
+  },
+
+  monthExists_(sheet, monthTitle) {
+    const lastRow = sheet.getLastRow();
+    const maxCol = Math.min(sheet.getLastColumn(), 10);
+    const target = this.normalize_(monthTitle);
+    const values = sheet.getRange(1, 1, lastRow, maxCol).getDisplayValues();
+
+    for (let r = 0; r < values.length; r++) {
+      for (let c = 0; c < values[r].length; c++) {
+        if (this.normalize_(values[r][c]) === target) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  },
+
+  findMonthTopRow_(sheet, monthTitle) {
+    const lastRow = sheet.getLastRow();
+    const maxCol = Math.min(sheet.getLastColumn(), 10);
+    const target = this.normalize_(monthTitle);
+    const values = sheet.getRange(1, 1, lastRow, maxCol).getDisplayValues();
+
+    for (let r = 0; r < values.length; r++) {
+      for (let c = 0; c < values[r].length; c++) {
+        if (this.normalize_(values[r][c]) === target) {
+          return r + 1;
+        }
+      }
+    }
+
+    throw new Error('Не нашла блок месяца: ' + monthTitle);
+  },
+
+  findMonthBottomRow_(sheet, monthTopRow) {
+    const maxRow = Math.min(sheet.getLastRow(), monthTopRow + 160);
+    const maxCol = Math.min(sheet.getLastColumn(), 12);
+
+    for (let row = monthTopRow; row <= maxRow; row++) {
+      const values = sheet.getRange(row, 1, 1, maxCol).getDisplayValues()[0];
+
+      if (values.some(value => this.normalize_(value) === 'без ндс')) {
+        return row;
+      }
+    }
+
+    throw new Error('Не нашла нижнюю строку месяца "Без НДС" после строки: ' + monthTopRow);
+  },
+
+  findHeaderRowForMonth_(sheet, apiDate) {
+    const monthTitle = this.monthTitle_(apiDate);
+    const monthTopRow = this.findMonthTopRow_(sheet, monthTitle);
+    const maxRow = Math.min(sheet.getLastRow(), monthTopRow + 120);
+    const maxCol = sheet.getLastColumn();
+
+    for (let row = monthTopRow; row <= maxRow; row++) {
+      const values = sheet.getRange(row, 1, 1, maxCol).getDisplayValues()[0];
+      const normalized = values.map(value => this.normalize_(value));
+
+      const hasDate = normalized.some(value => value === 'дата');
+      const hasImpressions = normalized.some(value => value === 'показы');
+      const hasClicks = normalized.some(value => value === 'клики');
+
+      if (hasDate && hasImpressions && hasClicks) {
+        return row;
+      }
+    }
+
+    throw new Error('Не нашла шапку месяца: ' + monthTitle);
+  },
+
+  getHeaderMap_(sheet, headerRow) {
+    const headers = sheet.getRange(headerRow, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+    const map = {};
+
+    headers.forEach((header, index) => {
+      const key = this.normalize_(header);
+
+      if (key) {
+        map[key] = index + 1;
+      }
+    });
+
+    return {
+      date: this.findExactCol_(map, 'дата'),
+
+      impressions: this.findExactCol_(map, 'показы'),
+      clicks: this.findExactCol_(map, 'клики'),
+      plannedCost: this.findContainsCol_(map, ['расход план с ндс', 'расход план c ндс']),
+      cost: this.findContainsCol_(map, ['расход факт с ндс', 'расход факт c ндс']),
+
+      view3Pages: this.findContainsCol_(map, ['просмотр 3х страниц']),
+      siteSearch: this.findContainsCol_(map, ['поиск по сайту']),
+
+      callibriSpam: this.findContainsCol_(map, ['callibri: спам', 'callibri спам']),
+      callibriNonTarget: this.findContainsCol_(map, ['callibri: нецелевой_лид', 'callibri нецелевой лид', 'callibri нецелевой_лид']),
+      addToCart: this.findContainsCol_(map, ['ecommerce: добавление в корзину', 'ecommerce добавление в корзину']),
+      purchase: this.findContainsCol_(map, ['ecommerce: покупка', 'ecommerce покупка']),
+      jivo: this.findContainsCol_(map, ['jivo-чат', 'jivo чат', 'jivo']),
+      callibriLeadA: this.findContainsCol_(map, ['callibri: лид_квал_a', 'callibri лид квал a', 'callibri лид_квал_a']),
+      callibriLeadB: this.findContainsCol_(map, ['callibri: лид_квал_b', 'callibri лид квал b', 'callibri лид_квал_b']),
+      callibriLeadC: this.findContainsCol_(map, ['callibri: лид_квал_c', 'callibri лид квал c', 'callibri лид_квал_c'])
+    };
+  },
+
+  findExactCol_(map, header) {
+    return map[this.normalize_(header)] || 0;
+  },
+
+  findContainsCol_(map, parts) {
+    const normalizedParts = parts.map(part => this.normalize_(part));
+
+    for (const key in map) {
+      for (let i = 0; i < normalizedParts.length; i++) {
+        if (key.indexOf(normalizedParts[i]) !== -1) {
+          return map[key];
+        }
+      }
+    }
+
+    return 0;
+  },
+
+  findTotalRow_(sheet, headerRow, dateCol) {
+    const maxRow = Math.min(sheet.getLastRow(), headerRow + 160);
+    const lastCol = sheet.getLastColumn();
+
+    // В ДБ строка ИТОГО идёт прямо перед "ПЛАН по МП".
+    for (let row = headerRow + 1; row <= maxRow; row++) {
+      const values = sheet.getRange(row, 1, 1, Math.min(lastCol, 12)).getDisplayValues()[0];
+
+      if (values.some(value => this.normalize_(value) === 'план по мп')) {
+        const totalRow = row - 1;
+
+        if (dateCol > 0) {
+          const totalCell = sheet.getRange(totalRow, dateCol);
+
+          if (!totalCell.getFormula() && this.normalize_(totalCell.getDisplayValue()) !== 'итого') {
+            totalCell.setValue('ИТОГО');
+          }
+        }
+
+        return totalRow;
+      }
+    }
+
+    throw new Error('Не нашла строку ИТОГО: нет строки "ПЛАН по МП" после строки ' + headerRow);
+  },
+
+  findFirstDateRow_(sheet, dateCol, headerRow, totalRow) {
+    for (let row = headerRow + 1; row < totalRow; row++) {
+      const raw = sheet.getRange(row, dateCol).getValue();
+      const display = String(sheet.getRange(row, dateCol).getDisplayValue() || '').trim();
+
+      if (raw instanceof Date) return row;
+      if (/^\d{1,2}\.\d{1,2}(\.\d{2,4})?$/.test(display)) return row;
+    }
+
+    return 0;
+  },
+
+  findDateRow_(sheet, dateCol, headerRow, apiDate) {
+    if (!dateCol || dateCol <= 0) {
+      throw new Error('Не найдена колонка "Дата" в ДБ.');
+    }
+
+    const totalRow = this.findTotalRow_(sheet, headerRow, dateCol);
+    const rowsCount = totalRow - headerRow - 1;
+
+    if (rowsCount <= 0) return 0;
+
+    const range = sheet.getRange(headerRow + 1, dateCol, rowsCount, 1);
+    const values = range.getValues();
+    const displayValues = range.getDisplayValues();
+
+    const targetLong = this.formatApiDate_(apiDate, 'dd.MM.yyyy');
+    const targetLongNoZero = this.formatApiDate_(apiDate, 'dd.M.yyyy');
+    const targetShort = this.formatApiDate_(apiDate, 'dd.MM');
+    const targetShortNoZero = this.formatApiDate_(apiDate, 'dd.M');
+
+    for (let i = 0; i < values.length; i++) {
+      const raw = values[i][0];
+      const display = String(displayValues[i][0] || '').trim();
+
+      if (raw instanceof Date) {
+        const rawApiDate = this.formatDate_(raw, 'yyyy-MM-dd');
+
+        if (rawApiDate === apiDate) {
+          return headerRow + 1 + i;
+        }
+      }
+
+      if (
+        display === targetLong ||
+        display === targetLongNoZero ||
+        display === targetShort ||
+        display === targetShort + '.' ||
+        display === targetShortNoZero ||
+        display === targetShortNoZero + '.'
+      ) {
+        return headerRow + 1 + i;
+      }
+    }
+
+    return 0;
+  },
+
+  findPlannedCostColumnFallback_(sheet, dataStartRow) {
+    const headerRow = dataStartRow - 1;
+    const lastCol = sheet.getLastColumn();
+    const headers = sheet.getRange(headerRow, 1, 1, lastCol).getDisplayValues()[0];
+
+    for (let i = 0; i < headers.length; i++) {
+      const key = this.normalize_(headers[i]);
+
+      if (
+        key.indexOf('расход') !== -1 &&
+        key.indexOf('план') !== -1 &&
+        key.indexOf('ндс') !== -1
+      ) {
+        return i + 1;
+      }
+    }
+
+    return 0;
+  },
+
+  findPlanFormulaParts_(sheet, monthTopRow, plannedCostCol) {
+    const maxRow = Math.min(sheet.getLastRow(), monthTopRow + 160);
+
+    for (let row = monthTopRow; row <= maxRow; row++) {
+      const values = sheet.getRange(row, 1, 1, Math.min(sheet.getLastColumn(), 12)).getDisplayValues()[0];
+
+      for (let c = 0; c < values.length; c++) {
+        const text = this.normalize_(values[c]);
+
+        if (text === 'план по мп') {
+          return {
+            planRow: row,
+            planCol: plannedCostCol
+          };
+        }
+      }
+    }
+
+    return null;
+  },
+
+
+  // =====================
+  // ОФОРМЛЕНИЕ / ФОРМУЛЫ / ПРОВЕРКА
+  // =====================
+
+  clearInputCells_(sheet, headerMap, dataStartRow, daysInMonth) {
+    const columns = [
+      headerMap.impressions,
+      headerMap.clicks,
+      headerMap.cost,
+      headerMap.view3Pages,
+      // SAFETY_2026_07_07: Callibri пока внешний источник, не очищаем его при создании/фиксе месяца.
+      headerMap.addToCart,
+      headerMap.purchase,
+      headerMap.jivo
+    ].filter(col => col && col > 0);
+
+    columns.forEach(col => {
+      for (let i = 0; i < daysInMonth; i++) {
+        const cell = sheet.getRange(dataStartRow + i, col);
+
+        if (!cell.getFormula()) {
+          cell.clearContent();
+        }
+      }
+    });
+  },
+
+  fixTotalRowFormulaRanges_(sheet, totalRow, dataStartRow, dataEndRow) {
+    const lastCol = sheet.getLastColumn();
+    const range = sheet.getRange(totalRow, 1, 1, lastCol);
+    const formulas = range.getFormulas()[0];
+
+    const fixed = formulas.map(formula => {
+      if (!formula) return formula;
+      return this.fixFormulaRangesToCurrentBlock_(formula, dataStartRow, dataEndRow);
+    });
+
+    range.setFormulas([fixed]);
+  },
+
+  fixFormulaRangesToCurrentBlock_(formula, dataStartRow, dataEndRow) {
+    return String(formula).replace(
+      /(\$?[A-Z]{1,3})(\$?\d+):(\$?[A-Z]{1,3})(\$?\d+)/g,
+      function(match, col1, row1, col2, row2) {
+        const cleanCol1 = col1.replace(/\$/g, '');
+        const cleanCol2 = col2.replace(/\$/g, '');
+
+        if (cleanCol1 !== cleanCol2) return match;
+
+        const newRow1 = row1.indexOf('$') === 0 ? '$' + dataStartRow : String(dataStartRow);
+        const newRow2 = row2.indexOf('$') === 0 ? '$' + dataEndRow : String(dataEndRow);
+
+        return col1 + newRow1 + ':' + col2 + newRow2;
+      }
+    );
+  },
+
+  applyFormattingFromTemplate_(sheet, headerMap, dataStartRow, daysInMonth, apiDate) {
+    const templateDate = this.config.templateMonthDate;
+    const templateHeaderRow = this.findHeaderRowForMonth_(sheet, templateDate);
+    const templateHeaderMap = this.getHeaderMap_(sheet, templateHeaderRow);
+    const templateTotalRow = this.findTotalRow_(sheet, templateHeaderRow, templateHeaderMap.date);
+    const templateDataStartRow = this.findFirstDateRow_(sheet, templateHeaderMap.date, templateHeaderRow, templateTotalRow) || templateHeaderRow + 1;
+
+    const samples = this.findTemplateSampleRows_(sheet, templateHeaderMap.date, templateDataStartRow, templateTotalRow);
+
+    const startCol = headerMap.date && headerMap.date > 0 ? headerMap.date : 1;
+    const endCol = this.findTableEndCol_(sheet, dataStartRow - 1);
+    const width = Math.max(endCol - startCol + 1, 1);
+
+    const monthStart = this.parseApiDate_(this.monthStartApi_(apiDate));
+
+    for (let i = 0; i < daysInMonth; i++) {
+      const row = dataStartRow + i;
+      const date = new Date(monthStart);
+      date.setDate(monthStart.getDate() + i);
+
+      const api = this.formatDate_(date, 'yyyy-MM-dd');
+      const sourceRow = this.isWorkingDay_(date, api) ? samples.weekdayRow : samples.weekendRow;
+
+      sheet
+        .getRange(sourceRow, startCol, 1, width)
+        .copyTo(
+          sheet.getRange(row, startCol, 1, width),
+          SpreadsheetApp.CopyPasteType.PASTE_FORMAT,
+          false
+        );
+    }
+  },
+
+  findTemplateSampleRows_(sheet, dateCol, dataStartRow, totalRow) {
+    let weekdayRow = 0;
+    let weekendRow = 0;
+
+    for (let row = dataStartRow; row < totalRow; row++) {
+      const raw = sheet.getRange(row, dateCol).getValue();
+      const display = sheet.getRange(row, dateCol).getDisplayValue();
+      const date = this.parseDbDateValue_(raw, display);
+
+      if (!date) continue;
+
+      const api = this.formatDate_(date, 'yyyy-MM-dd');
+      const isWorking = this.isWorkingDay_(date, api);
+
+      if (isWorking && !weekdayRow) weekdayRow = row;
+      if (!isWorking && !weekendRow) weekendRow = row;
+
+      if (weekdayRow && weekendRow) break;
+    }
+
+    if (!weekdayRow) weekdayRow = dataStartRow;
+    if (!weekendRow) weekendRow = weekdayRow;
+
+    return {
+      weekdayRow: weekdayRow,
+      weekendRow: weekendRow
+    };
+  },
+
+  parseDbDateValue_(raw, display) {
+    if (raw instanceof Date) return raw;
+
+    const text = String(display || '').trim();
+    const match = text.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\.?$/);
+
+    if (!match) return null;
+
+    const day = Number(match[1]);
+    const month = Number(match[2]) - 1;
+
+    let year = new Date().getFullYear();
+
+    if (match[3]) {
+      year = Number(match[3]);
+      if (year < 100) year += 2000;
+    }
+
+    return new Date(year, month, day);
+  },
+
+  findTableEndCol_(sheet, headerRow) {
+    const lastCol = sheet.getLastColumn();
+    const headers = sheet.getRange(headerRow, 1, 1, lastCol).getDisplayValues()[0];
+
+    for (let i = headers.length - 1; i >= 0; i--) {
+      if (String(headers[i] || '').trim() !== '') {
+        return i + 1;
+      }
+    }
+
+    return lastCol;
+  },
+
+  validateMonth_(sheet, apiDate) {
+    const monthTitle = this.monthTitle_(apiDate);
+    const headerRow = this.findHeaderRowForMonth_(sheet, apiDate);
+    const headerMap = this.getHeaderMap_(sheet, headerRow);
+    const totalRow = this.findTotalRow_(sheet, headerRow, headerMap.date);
+    const dataStartRow = this.findFirstDateRow_(sheet, headerMap.date, headerRow, totalRow) || headerRow + 1;
+    const daysInMonth = this.daysInMonth_(apiDate);
+    const expectedTotalRow = dataStartRow + daysInMonth;
+
+    if (totalRow !== expectedTotalRow) {
+      throw new Error(
+        'Проверка ' + monthTitle + ': строка ИТОГО найдена на ' + totalRow +
+        ', а должна быть на ' + expectedTotalRow +
+        '. Первая дата: ' + dataStartRow + ', дней в месяце: ' + daysInMonth
+      );
+    }
+
+    const planCol = headerMap.plannedCost || this.findPlannedCostColumnFallback_(sheet, dataStartRow);
+    const monthStart = this.parseApiDate_(this.monthStartApi_(apiDate));
+
+    for (let i = 0; i < daysInMonth; i++) {
+      const row = dataStartRow + i;
+      const date = new Date(monthStart);
+      date.setDate(monthStart.getDate() + i);
+
+      const api = this.formatDate_(date, 'yyyy-MM-dd');
+      const cell = sheet.getRange(row, planCol);
+
+      if (this.isWorkingDay_(date, api) && !cell.getFormula()) {
+        throw new Error('Проверка ' + monthTitle + ': в плановой колонке нет формулы в рабочий день, строка ' + row);
+      }
+
+      if (!this.isWorkingDay_(date, api) && cell.getDisplayValue()) {
+        throw new Error('Проверка ' + monthTitle + ': в выходной/праздник план должен быть пустым, строка ' + row);
+      }
+    }
+
+    Logger.log('Проверка месяца пройдена: ' + monthTitle);
+  },
+
+
+  // =====================
+  // ЗАПИСЬ
+  // =====================
+
+  setNumberCell_(sheet, row, col, value) {
+    if (!col || col <= 0) return;
+
+    const cell = sheet.getRange(row, col);
+
+    if (cell.getFormula()) return;
+
+    cell.setValue(Number(value || 0));
+  },
+
+  setGoalCell_(sheet, row, col, value) {
+    if (!col || col <= 0) return;
+
+    const cell = sheet.getRange(row, col);
+
+    if (cell.getFormula()) return;
+
+    const number = Number(value || 0);
+    cell.setValue(number > 0 ? number : '-');
+  },
+
+  setExternalGoalCellIfConfigured_(sheet, row, col, value, sourceIds) {
+    // SAFETY_2026_07_07:
+    // Если внешний источник Callibri ещё не подключён к этому генератору,
+    // не затираем уже записанные значения в ДБ нулями / прочерками.
+    if (!sourceIds || !sourceIds.length) return;
+    this.setGoalCell_(sheet, row, col, value);
+  },
+
+  setIfNoFormula_(sheet, row, col, value, numberFormat) {
+    const cell = sheet.getRange(row, col);
+
+    if (cell.getFormula()) return;
+
+    cell.setValue(value);
+
+    if (numberFormat) {
+      cell.setNumberFormat(numberFormat);
+    }
+  },
+
+
+  // =====================
+  // ДИРЕКТ
+  // =====================
+
+  loadDirectDailyRows_(dateFrom, dateTo) {
+    const allGoalIds = this.getAllGoalIds_();
+
+    const reportBody = {
+      params: {
+        SelectionCriteria: {
+          DateFrom: dateFrom,
+          DateTo: dateTo
+        },
+        Goals: allGoalIds.map(id => Number(id)),
+        AttributionModels: ['AUTO'],
+        FieldNames: [
+          'Date',
+          'Impressions',
+          'Clicks',
+          'Cost',
+          'Conversions'
+        ],
+        ReportName: 'tdm_db_' + dateFrom + '_' + dateTo + '_' + Utilities.getUuid(),
+        ReportType: 'ACCOUNT_PERFORMANCE_REPORT',
+        DateRangeType: 'CUSTOM_DATE',
+        Format: 'TSV',
+        IncludeVAT: 'YES',
+        IncludeDiscount: 'NO'
+      }
+    };
+
+    const text = this.requestDirectReport_(reportBody);
+    return this.parseDirectDailyTsv_(text);
+  },
+
+  requestDirectReport_(reportBody) {
+    let token = PropertiesService.getScriptProperties().getProperty('YANDEX_TOKEN');
+
+    if (!token) {
+      throw new Error('Не найден YANDEX_TOKEN в Script Properties.');
+    }
+
+    token = String(token)
+      .replace(/^OAuth\s+/i, '')
+      .replace(/^Bearer\s+/i, '')
+      .trim();
+
+    const url = 'https://api.direct.yandex.com/json/v5/reports';
+
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(reportBody),
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Client-Login': this.config.clientLogin,
+        'Accept-Language': 'ru',
+        processingMode: 'auto',
+        returnMoneyInMicros: 'false',
+        skipReportHeader: 'true',
+        skipColumnHeader: 'false',
+        skipReportSummary: 'true'
+      },
+      muteHttpExceptions: true
+    };
+
+    for (let attempt = 1; attempt <= 15; attempt++) {
+      const response = UrlFetchApp.fetch(url, options);
+      const code = response.getResponseCode();
+      const text = response.getContentText();
+
+      if (code === 200) return text;
+
+      if (code === 201 || code === 202) {
+        Utilities.sleep(5000);
+        continue;
+      }
+
+      throw new Error('Ошибка Директа. Код: ' + code + '\n' + text);
+    }
+
+    throw new Error('Отчёт Директа не успел сформироваться.');
+  },
+
+  parseDirectDailyTsv_(tsvText) {
+    const text = String(tsvText || '').trim();
+
+    if (!text) return {};
+
+    const lines = text.split(/\r?\n/).filter(line => String(line).trim() !== '');
+
+    const headerIndex = lines.findIndex(line => {
+      const cols = line.split('\t');
+      return cols.indexOf('Date') !== -1 && cols.indexOf('Cost') !== -1;
+    });
+
+    if (headerIndex === -1) {
+      throw new Error('Не найдена строка заголовков в отчёте Директа.');
+    }
+
+    const headers = lines[headerIndex]
+      .split('\t')
+      .map(header => String(header).replace(/^\uFEFF/, '').trim());
+
+    const idxDate = this.requireColumn_(headers, 'Date');
+    const idxImpressions = this.requireColumn_(headers, 'Impressions');
+    const idxClicks = this.requireColumn_(headers, 'Clicks');
+    const idxCost = this.requireColumn_(headers, 'Cost');
+
+    const goalIndexes = {};
+
+    this.getAllGoalIds_().forEach(goalId => {
+      goalIndexes[goalId] = this.findGoalColumn_(headers, goalId);
+
+      if (goalIndexes[goalId] === -1) {
+        Logger.log('Не найден столбец цели в отчёте Директа: ' + goalId);
+      }
+    });
+
+    const result = {};
+
+    for (let i = headerIndex + 1; i < lines.length; i++) {
+      const row = lines[i].split('\t');
+      const apiDate = String(row[idxDate] || '').trim();
+
+      if (!apiDate) continue;
+
+      if (!result[apiDate]) {
+        result[apiDate] = this.emptyRow_();
+      }
+
+      result[apiDate].impressions += this.toNumber_(row[idxImpressions]);
+      result[apiDate].clicks += this.toNumber_(row[idxClicks]);
+      result[apiDate].cost += this.toNumber_(row[idxCost]);
+
+      result[apiDate].view3Pages += this.getGoalSum_(row, goalIndexes, this.config.goals.view3Pages);
+      result[apiDate].siteSearch += this.getGoalSum_(row, goalIndexes, this.config.goals.siteSearch);
+      result[apiDate].callibriSpam += this.getGoalSum_(row, goalIndexes, this.config.goals.callibriSpam);
+      result[apiDate].callibriNonTarget += this.getGoalSum_(row, goalIndexes, this.config.goals.callibriNonTarget);
+      result[apiDate].addToCart += this.getGoalSum_(row, goalIndexes, this.config.goals.addToCart);
+      result[apiDate].purchase += this.getGoalSum_(row, goalIndexes, this.config.goals.purchase);
+      result[apiDate].jivo += this.getGoalSum_(row, goalIndexes, this.config.goals.jivo);
+      result[apiDate].callibriLeadA += this.getGoalSum_(row, goalIndexes, this.config.goals.callibriLeadA);
+      result[apiDate].callibriLeadC += this.getGoalSum_(row, goalIndexes, this.config.goals.callibriLeadC);
+    }
+
+    return result;
+  },
+
+  getGoalSum_(row, goalIndexes, goalIds) {
+    return goalIds.reduce((sum, goalId) => {
+      const idx = goalIndexes[goalId];
+
+      if (idx === -1 || idx === undefined) return sum;
+
+      return sum + this.toNumber_(row[idx]);
+    }, 0);
+  },
+
+  getAllGoalIds_() {
+    let result = [];
+
+    Object.keys(this.config.goals).forEach(key => {
+      result = result.concat(this.config.goals[key]);
+    });
+
+    return result;
+  },
+
+  findGoalColumn_(headers, goalId) {
+    const id = String(goalId);
+
+    let index = headers.findIndex(header => {
+      return String(header).trim() === 'Conversions_' + id + '_AUTO';
+    });
+
+    if (index !== -1) return index;
+
+    index = headers.findIndex(header => {
+      return String(header).trim().indexOf('Conversions_' + id + '_') === 0;
+    });
+
+    if (index !== -1) return index;
+
+    return headers.findIndex(header => {
+      return String(header).indexOf(id) !== -1;
+    });
+  },
+
+
+  // =====================
+  // ОБЩЕЕ
+  // =====================
+
+  emptyRow_() {
+    return {
+      impressions: 0,
+      clicks: 0,
+      cost: 0,
+      view3Pages: 0,
+      siteSearch: 0,
+      callibriSpam: 0,
+      callibriNonTarget: 0,
+      addToCart: 0,
+      purchase: 0,
+      jivo: 0,
+      callibriLeadA: 0,
+      callibriLeadC: 0
+    };
+  },
+
+  requireColumn_(headers, columnName) {
+    const index = headers.indexOf(columnName);
+
+    if (index === -1) {
+      throw new Error('Не найден столбец "' + columnName + '". Заголовки: ' + headers.join(' | '));
+    }
+
+    return index;
+  },
+
+  getYesterday_() {
+    const now = new Date();
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+
+    return this.formatDate_(yesterday, 'yyyy-MM-dd');
+  },
+
+  getDateRange_(dateFrom, dateTo) {
+    const start = this.parseApiDate_(dateFrom);
+    const end = this.parseApiDate_(dateTo);
+    const dates = [];
+
+    const current = new Date(start);
+
+    while (current <= end) {
+      dates.push(this.formatDate_(current, 'yyyy-MM-dd'));
+      current.setDate(current.getDate() + 1);
+    }
+
+    return dates;
+  },
+
+  parseApiDate_(apiDate) {
+    const parts = String(apiDate).split('-').map(Number);
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+  },
+
+  formatApiDate_(apiDate, format) {
+    const date = this.parseApiDate_(apiDate);
+    return this.formatDate_(date, format);
+  },
+
+  formatDate_(date, format) {
+    return Utilities.formatDate(date, this.config.timezone, format);
+  },
+
+  monthTitle_(apiDate) {
+    const date = this.parseApiDate_(apiDate);
+    const monthNames = [
+      'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+      'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+    ];
+
+    return monthNames[date.getMonth()] + ' ' + date.getFullYear();
+  },
+
+  monthStartApi_(apiDate) {
+    const date = this.parseApiDate_(apiDate);
+
+    return this.formatDate_(
+      new Date(date.getFullYear(), date.getMonth(), 1),
+      'yyyy-MM-dd'
+    );
+  },
+
+  monthEndApi_(apiDate) {
+    const date = this.parseApiDate_(apiDate);
+
+    return this.formatDate_(
+      new Date(date.getFullYear(), date.getMonth() + 1, 0),
+      'yyyy-MM-dd'
+    );
+  },
+
+  addMonths_(apiDate, diff) {
+    const date = this.parseApiDate_(apiDate);
+    date.setMonth(date.getMonth() + diff);
+
+    return this.formatDate_(date, 'yyyy-MM-dd');
+  },
+
+  daysInMonth_(apiDate) {
+    const date = this.parseApiDate_(apiDate);
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  },
+
+  daysPassedForMonth_(monthStartApi) {
+    const monthStart = this.parseApiDate_(monthStartApi);
+    const today = this.parseApiDate_(this.formatDate_(new Date(), 'yyyy-MM-dd'));
+
+    if (today.getFullYear() < monthStart.getFullYear()) return 0;
+    if (today.getFullYear() === monthStart.getFullYear() && today.getMonth() < monthStart.getMonth()) return 0;
+
+    const daysInMonth = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0).getDate();
+
+    if (today.getFullYear() === monthStart.getFullYear() && today.getMonth() === monthStart.getMonth()) {
+      return Math.max(Math.min(today.getDate() - 1, daysInMonth), 0);
+    }
+
+    return daysInMonth;
+  },
+
+  countWorkingDays_(apiDate) {
+    const daysInMonth = this.daysInMonth_(apiDate);
+    const start = this.parseApiDate_(this.monthStartApi_(apiDate));
+    let count = 0;
+
+    for (let i = 0; i < daysInMonth; i++) {
+      const date = new Date(start);
+      date.setDate(start.getDate() + i);
+
+      const api = this.formatDate_(date, 'yyyy-MM-dd');
+
+      if (this.isWorkingDay_(date, api)) {
+        count++;
+      }
+    }
+
+    return count;
+  },
+
+  isWorkingDay_(date, apiDate) {
+    const day = date.getDay();
+
+    if (day === 0 || day === 6) return false;
+    if (this.config.holidays.indexOf(apiDate) !== -1) return false;
+
+    return true;
+  },
+
+  toNumber_(value) {
+    if (value === null || value === undefined) return 0;
+
+    const text = String(value)
+      .replace(/\s/g, '')
+      .replace(',', '.')
+      .replace(/[^\d.-]/g, '');
+
+    const number = Number(text);
+
+    return isNaN(number) ? 0 : number;
+  },
+
+  normalize_(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/ё/g, 'е')
+      .replace(/[«»"']/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  },
+
+  columnToLetter_(column) {
+    let temp = '';
+    let letter = '';
+
+    while (column > 0) {
+      temp = (column - 1) % 26;
+      letter = String.fromCharCode(temp + 65) + letter;
+      column = (column - temp - 1) / 26;
+    }
+
+    return letter;
+  },
+
+  isRowEmpty_(sheet, row, lastCol) {
+    if (row > sheet.getMaxRows()) return true;
+
+    const values = sheet.getRange(row, 1, 1, lastCol).getDisplayValues()[0];
+
+    return values.every(value => String(value || '').trim() === '');
+  },
+
+  safeMessage_(message) {
+    Logger.log(message);
+
+    try {
+      SpreadsheetApp.getUi().alert(message);
+    } catch (e) {
+      Logger.log('UI-сообщение не показано: ' + e.message);
+    }
   }
 };
 
 // =====================
-// ЗАПУСК
+// ТДМ_2026 — единый автооркестратор отчётов
+// Создано: 2026-07-07
+// Не пишет в формулы и ИТОГО напрямую: вызывает существующие функции и логирует статус в «Рабочие».
 // =====================
 
-function createDbJune2026FromMayTemplate_v4() {
-  DB_VAG_V04_createMonthBlockFromMayTemplate_(2026, 6);
+function tdmAutoDailyReports20260707() {
+  TDM_AUTO_20260707.daily();
 }
 
-function createDbCurrentMonthFromMayTemplate_v4() {
-  const now = new Date();
-  const year = Number(Utilities.formatDate(now, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy'));
-  const month = Number(Utilities.formatDate(now, DB_VAG_V04_CONFIG.TIMEZONE, 'M'));
-  DB_VAG_V04_createMonthBlockFromMayTemplate_(year, month);
+function archived_tdmBackfillDbSearchSiteJuly0607_20260708() {
+  TDM_DB.fillPeriod_('2026-07-06', '2026-07-07');
+  return { ok: true, period: '2026-07-06 — 2026-07-07', fields: ['Поиск по сайту'] };
 }
 
-function checkDbMetrikaAccess_v4() {
-  const period = DB_VAG_V04_getMonthPeriodForReport_(2026, 6);
-  const data = DB_VAG_V04_getMetrikaGoalsByDate_(period.dateFrom, period.dateTo);
-  Logger.log('Доступ к Метрике есть. Дней с данными по целям найдено: ' + Object.keys(data).length);
+function archived_tdmFixCallibriManualJuly020607_20260708() {
+  const ss = SpreadsheetApp.openById('1zXDDfiRYHJE34iOJg-QfAC0bvoTKMIAuVMfsJS0z5Dg');
+  const db = ss.getSheetByName('ДБ');
+  const check = ss.getSheetByName('Callibri_Сверка');
+
+  if (!db) throw new Error('Не найден лист ДБ');
+  if (!check) throw new Error('Не найден лист Callibri_Сверка');
+
+  // ДБ: 02.07 возвращаем Callibri A/C, 06.07 вносим Spam из Callibri с utm_source=ya.
+  db.getRange('R291').setValue(1);
+  db.getRange('S291').setValue(2);
+  db.getRange('M295').setValue(1);
+  db.getRange('M296').setValue('-');
+  db.getRange('N296').setValue('-');
+  db.getRange('R296').setValue('-');
+  db.getRange('S296').setValue('-');
+
+  // Callibri_Сверка: фиксируем реальные статусы из Callibri, включая utm_source=ya.
+  check.getRange('A5:H5').setValues([['02.07.2026', 3, 1, 2, 0, 0, 'Записано', 'Клиент проставил статусы в Callibri']]);
+  check.getRange('A9:H9').setValues([['07.07.2026', 1, 0, 0, 0, 0, 'Записано', 'Есть yandex/ya cpc без явного класса — не считаем лидом']]);
+  check.getRange('A10:H10').setValues([['06.07.2026', 1, 0, 0, 1, 0, 'Записано', 'utm_source=ya, utm_medium=cpc; статус Спам']]);
+
+  return { ok: true, fixed: ['02.07 A=1 C=2', '06.07 Spam=1', '07.07 без класса, не лид'] };
 }
 
-function testUisApiConnection() {
-  const token = DB_VAG_V04_getUisToken_();
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const date = Utilities.formatDate(yesterday, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy-MM-dd');
-  const rows = DB_VAG_V04_getUisReportRows_('get.calls_report', date, date, DB_VAG_V04_getUisCallFields_(), token, 1);
-  const firstRow = rows[0] || {};
-
-  Logger.log('UIS API status: OK');
-  Logger.log('UIS rows found in test response: ' + rows.length);
-  Logger.log('UIS first row structure without personal data: ' + JSON.stringify(DB_VAG_V04_maskUisRowForLog_(firstRow)));
+function tdmUpdateRegionReportCurrentMonth20260707() {
+  TDM_REGION_AUTO_20260707.updateCurrentMonthToYesterday();
 }
 
-function previewUisDailyDataForDb() {
-  const now = new Date();
-  const year = Number(Utilities.formatDate(now, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy'));
-  const month = Number(Utilities.formatDate(now, DB_VAG_V04_CONFIG.TIMEZONE, 'M'));
-  const period = DB_VAG_V04_getMonthPeriodForReport_(year, month);
-  const uisByDate = DB_VAG_V04_getUisDailyDataForDb_(period.dateFrom, period.dateTo);
-
-  Object.keys(uisByDate).sort().forEach(date => {
-    const row = uisByDate[date];
-    Logger.log(date + ' -> O=' + row.callsTotalFromUis + ', P=' + row.qualityCallsFromUis + ', Q=' + row.leadsFromUis);
-  });
-}
-
-function diagnoseUisDailyDataForDb() {
-  const now = new Date();
-  const year = Number(Utilities.formatDate(now, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy'));
-  const month = Number(Utilities.formatDate(now, DB_VAG_V04_CONFIG.TIMEZONE, 'M'));
-  const period = DB_VAG_V04_getMonthPeriodForReport_(year, month);
-  const token = DB_VAG_V04_getUisToken_();
-
-  const calls = DB_VAG_V04_getUisReportRows_('get.calls_report', period.dateFrom, period.dateTo, DB_VAG_V04_getUisCallFields_(), token);
-  const leads = DB_VAG_V04_getUisReportRows_('get.offline_messages_report', period.dateFrom, period.dateTo, DB_VAG_V04_getUisLeadFields_(), token);
-  const directCalls = calls.filter(row => DB_VAG_V04_isYandexDirectUisRow_(row));
-  const directLeads = leads.filter(row => DB_VAG_V04_isYandexDirectUisRow_(row));
-
-  Logger.log('UIS period: ' + period.dateFrom + ' — ' + period.dateTo);
-  Logger.log('UIS calls rows total before source filter: ' + calls.length);
-  Logger.log('UIS calls rows matched as Yandex Direct: ' + directCalls.length);
-  Logger.log('UIS leads rows total before source filter: ' + leads.length);
-  Logger.log('UIS leads rows matched as Yandex Direct: ' + directLeads.length);
-  Logger.log('UIS calls source-like values: ' + JSON.stringify(DB_VAG_V04_collectUisSourceDebugValues_(calls)));
-  Logger.log('UIS leads source-like values: ' + JSON.stringify(DB_VAG_V04_collectUisSourceDebugValues_(leads)));
-  Logger.log('UIS first call row keys: ' + Object.keys(calls[0] || {}).join(', '));
-  Logger.log('UIS first call row without personal data: ' + JSON.stringify(DB_VAG_V04_maskUisRowForLog_(calls[0] || {})));
-  Logger.log('UIS first lead row keys: ' + Object.keys(leads[0] || {}).join(', '));
-  Logger.log('UIS first lead row without personal data: ' + JSON.stringify(DB_VAG_V04_maskUisRowForLog_(leads[0] || {})));
-}
-
-// =====================
-// ОСНОВНАЯ ЛОГИКА
-// =====================
-
-function DB_VAG_V04_createMonthBlockFromMayTemplate_(year, month) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(DB_VAG_V04_CONFIG.SHEET_NAME);
-
-  if (!sheet) {
-    throw new Error('Не найден лист ' + DB_VAG_V04_CONFIG.SHEET_NAME);
-  }
-
-  const period = DB_VAG_V04_getMonthPeriodForReport_(year, month);
-  const monthLabel = DB_VAG_V04_getMonthLabel_(year, month);
-  const daysInMonth = DB_VAG_V04_getDaysInMonth_(year, month);
-  const template = DB_VAG_V04_getMayTemplateInfo_(sheet);
-  const topRow = DB_VAG_V04_findOrCreateMonthTopRow_(sheet, monthLabel, template);
-
-  const headerRow = topRow + template.headerOffset;
-  const dataStartRow = headerRow + 1;
-  const totalRow = dataStartRow + daysInMonth;
-
-  DB_VAG_V04_assertMonthBlockSafeToRebuild_(topRow, totalRow + template.afterTotalRows);
-
-  DB_VAG_V04_prepareBlockAreaFromTemplate_(sheet, topRow, template, daysInMonth);
-
-  const directByDate = DB_VAG_V04_getDirectDailyStats_(period.dateFrom, period.dateTo);
-  const goalsByDate = DB_VAG_V04_getMetrikaGoalsByDate_(period.dateFrom, period.dateTo);
-  const uisByDate = DB_VAG_V04_getUisDailyDataForDb_(period.dateFrom, period.dateTo);
-
-  DB_VAG_V04_writeMonthHeader_(sheet, topRow, monthLabel, period, template, totalRow);
-  DB_VAG_V04_writeTableHeader_(sheet, headerRow);
-  DB_VAG_V04_writeDailyRows_(sheet, dataStartRow, year, month, daysInMonth, directByDate, goalsByDate, uisByDate, period.dateTo);
-  DB_VAG_V04_writeTotalsAndPlan_(sheet, totalRow, dataStartRow, dataStartRow + daysInMonth - 1, period);
-  DB_VAG_V04_applyFormatting_(sheet, topRow, headerRow, dataStartRow, totalRow, template, year, month);
-
-  SpreadsheetApp.flush();
-  Logger.log('Готово: блок ДБ "' + monthLabel + '" создан/пересобран с форматированием как в мае за период ' + period.dateFrom + ' — ' + period.dateTo);
-}
-
-function DB_VAG_V04_getMonthPeriodForReport_(year, month) {
-  const todayStr = Utilities.formatDate(new Date(), DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy-MM-dd');
-  const today = DB_VAG_V04_parseApiDate_(todayStr);
-  const monthStart = new Date(year, month - 1, 1);
-  const monthEnd = new Date(year, month, 0);
+function tdmCheckCallibriPublic20260707() {
+  const today = new Date();
   const yesterday = new Date(today);
   yesterday.setDate(today.getDate() - 1);
+  const dateFrom = Utilities.formatDate(yesterday, 'Europe/Moscow', 'yyyy-MM-dd');
+  const dateTo = dateFrom;
+  return tdmGptCheckCallibriAggregate_({
+    dateFrom: dateFrom,
+    dateTo: dateTo,
+    mode: 'yesterday_daily_sync'
+  });
+}
 
-  let reportEnd = monthEnd;
-  if (year === today.getFullYear() && month === today.getMonth() + 1) {
-    reportEnd = yesterday < monthStart ? monthStart : yesterday;
-  }
+function tdmDailyCallibriSync20260708() {
+  const period = tdmCallibriRolling7DayPeriod_();
+  const snapshot = tdmGptCallibriAggregateYandexCpcByCampaign_(period.dateFrom, period.dateTo);
+  const summary = tdmGptCheckCallibriAggregate_({
+    dateFrom: period.dateFrom,
+    dateTo: period.dateTo,
+    mode: 'rolling_7_days_daily_sync',
+    callibriSnapshot: snapshot
+  });
+  const writeResult = tdmApplyCallibriAggregateToDbPeriod_(snapshot, period.dateFrom, period.dateTo);
 
   return {
-    dateFrom: Utilities.formatDate(monthStart, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy-MM-dd'),
-    dateTo: Utilities.formatDate(reportEnd, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy-MM-dd'),
-    monthStart: Utilities.formatDate(monthStart, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy-MM-dd'),
-    monthEnd: Utilities.formatDate(monthEnd, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy-MM-dd')
+    ok: true,
+    mode: 'daily_callibri_rolling_7_days',
+    period: period,
+    aggregate: summary,
+    write: writeResult
   };
 }
 
-// =====================
-// СОЗДАНИЕ БЛОКА В ТАБЛИЦЕ
-// =====================
+function tdmCheckCallibriLast3Workdays20260708() {
+  // Совместимый read-only вход. Старое имя оставлено для существующих вызовов,
+  // но фактически проверяется то же скользящее окно 7 дней.
+  return tdmCheckCallibriRolling7Days20260713();
+}
 
-function DB_VAG_V04_findOrCreateMonthTopRow_(sheet, monthLabel, template) {
-  const lastRow = Math.max(sheet.getLastRow(), 1);
-  const values = sheet.getRange(1, 2, lastRow, 1).getDisplayValues(); // B
+function tdmCheckCallibriRolling7Days20260713() {
+  const period = tdmCallibriRolling7DayPeriod_();
+  return tdmGptCheckCallibriAggregate_({
+    dateFrom: period.dateFrom,
+    dateTo: period.dateTo,
+    mode: 'rolling_7_days_check'
+  });
+}
 
-  for (let i = 0; i < values.length; i++) {
-    if (String(values[i][0]).trim() === monthLabel) {
-      const candidateRow = i + 1;
-      // Старый ошибочный июнь мог оказаться выше майского шаблона.
-      // Такой блок игнорируем, чтобы не стереть майский формат при пересборке.
-      if (candidateRow > template.topRow) {
-        return candidateRow;
+function archived_tdmCheckCallibriLast3WorkdaysBeforeRolling7_20260708() {
+  const timezone = 'Europe/Moscow';
+  const today = new Date();
+  const days = [];
+  const cursor = new Date(today);
+  cursor.setDate(cursor.getDate() - 1);
+
+  while (days.length < 3) {
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) {
+      days.push(Utilities.formatDate(cursor, timezone, 'yyyy-MM-dd'));
+    }
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  const dateFrom = days[days.length - 1];
+  const dateTo = days[0];
+
+  return tdmGptCheckCallibriAggregate_({
+    dateFrom: dateFrom,
+    dateTo: dateTo,
+    mode: 'last_3_workdays_recheck'
+  });
+}
+
+function tdmCallibriRolling7DayPeriod_() {
+  const timezone = 'Europe/Moscow';
+  const dateToValue = new Date();
+  dateToValue.setDate(dateToValue.getDate() - 1);
+  const dateFromValue = new Date(dateToValue);
+  dateFromValue.setDate(dateToValue.getDate() - 6);
+  return {
+    dateFrom: Utilities.formatDate(dateFromValue, timezone, 'yyyy-MM-dd'),
+    dateTo: Utilities.formatDate(dateToValue, timezone, 'yyyy-MM-dd')
+  };
+}
+
+function tdmCallibriApiDates_(dateFrom, dateTo) {
+  const result = [];
+  let cursor = tdmGptParseApiDate_(dateFrom);
+  const end = tdmGptParseApiDate_(dateTo);
+  while (cursor <= end) {
+    result.push(tdmGptFormatApiDate_(cursor));
+    cursor = new Date(cursor);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return result;
+}
+
+function tdmApplyCallibriAggregateToDbPeriod_(callibriSnapshot, dateFrom, dateTo) {
+  if (!callibriSnapshot || typeof callibriSnapshot !== 'object') {
+    throw new Error('ДБ: не передан снимок Callibri. Повторный запрос API внутри записи запрещён.');
+  }
+
+  const rows = Object.keys(callibriSnapshot).sort().map(function(key) {
+    return callibriSnapshot[key];
+  });
+  const dates = tdmCallibriApiDates_(dateFrom, dateTo);
+  const write = TDM_CALLIBRI_STABLE_20260709.writeSelectedDates_([{ rows: rows }], dates);
+  return { ok: true, period: { dateFrom: dateFrom, dateTo: dateTo }, dates: dates, write: write };
+}
+
+function archived_tdmUpdateDbCallibriLast3Workdays20260708() {
+  return TDM_DB_CALLIBRI_20260708.writeLast3WorkdaysFromRecheckSheet();
+}
+
+const TDM_DB_CALLIBRI_20260708 = {
+  spreadsheetId: '1zXDDfiRYHJE34iOJg-QfAC0bvoTKMIAuVMfsJS0z5Dg',
+  dbSheetName: 'ДБ',
+  checkSheetName: 'Callibri_Сверка',
+  timezone: 'Europe/Moscow',
+
+  writeLast3WorkdaysFromRecheckSheet() {
+    const dates = this.yesterdayAndLast3Workdays_();
+    const ss = SpreadsheetApp.openById(this.spreadsheetId);
+    const dbSheet = ss.getSheetByName(this.dbSheetName);
+    const checkSheet = ss.getSheetByName(this.checkSheetName);
+
+    if (!dbSheet) throw new Error('Не найден лист ДБ.');
+    if (!checkSheet) throw new Error('Не найден лист Callibri_Сверка.');
+
+    const checkByDate = this.readCallibriCheck_(checkSheet);
+    const result = [];
+
+    dates.forEach(apiDate => {
+      const item = checkByDate[this.ruDate_(apiDate)];
+      if (!item) {
+        result.push(apiDate + ': нет строки в Callibri_Сверка, ДБ не тронут');
+        return;
+      }
+
+      this.writeDbDate_(dbSheet, apiDate, item);
+      result.push(apiDate + ': записано Spam=' + item.spam + ', NonTarget=' + item.nonTarget + ', A=' + item.leadA + ', C=' + item.leadC);
+    });
+
+    return { ok: true, mode: 'last_3_workdays_db_write', result: result };
+  },
+
+  writeFreshApiResultsToCheckAndDb(apiResults) {
+    const ss = SpreadsheetApp.openById(this.spreadsheetId);
+    const dbSheet = ss.getSheetByName(this.dbSheetName);
+    const checkSheet = ss.getSheetByName(this.checkSheetName);
+
+    if (!dbSheet) throw new Error('Не найден лист ДБ.');
+    if (!checkSheet) throw new Error('Не найден лист Callibri_Сверка.');
+
+    const byDate = this.aggregateFreshApiResults_(apiResults);
+    const dates = this.yesterdayAndLast3Workdays_();
+    const result = [];
+
+    dates.forEach(apiDate => {
+      const item = byDate[apiDate] || this.emptyCallibriItem_();
+      this.upsertCheckRow_(checkSheet, apiDate, item);
+      this.writeDbDate_(dbSheet, apiDate, item);
+      result.push(apiDate + ': сверка и ДБ обновлены; Total=' + item.totalYandexCpc + ', Spam=' + item.spam + ', NonTarget=' + item.nonTarget + ', A=' + item.leadA + ', C=' + item.leadC + ', Unknown=' + item.unknownClass);
+    });
+
+    return { ok: true, mode: 'fresh_api_to_check_and_db', result: result };
+  },
+
+  aggregateFreshApiResults_(apiResults) {
+    const result = {};
+    const seenRows = {};
+
+    (apiResults || []).forEach(apiResult => {
+      const rows = apiResult && apiResult.rows ? apiResult.rows : [];
+      rows.forEach(row => {
+        const apiDate = String(row.date || '').trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(apiDate)) return;
+
+        const rowKey = [
+          apiDate,
+          String(row.campaignKey || ''),
+          this.num_(row.totalYandexCpc),
+          this.num_(row.callibriLeadA),
+          this.num_(row.callibriLeadB),
+          this.num_(row.callibriLeadC),
+          this.num_(row.callibriSpam),
+          this.num_(row.callibriNonTarget),
+          this.num_(row.unknownClass)
+        ].join('|');
+
+        if (seenRows[rowKey]) return;
+        seenRows[rowKey] = true;
+
+        if (!result[apiDate]) result[apiDate] = this.emptyCallibriItem_();
+
+        result[apiDate].totalYandexCpc += this.num_(row.totalYandexCpc);
+        result[apiDate].leadA += this.num_(row.callibriLeadA);
+        result[apiDate].leadB += this.num_(row.callibriLeadB);
+        result[apiDate].leadC += this.num_(row.callibriLeadC);
+        result[apiDate].spam += this.num_(row.callibriSpam);
+        result[apiDate].nonTarget += this.num_(row.callibriNonTarget);
+        result[apiDate].unknownClass += this.num_(row.unknownClass);
+      });
+    });
+
+    return result;
+  },
+
+  emptyCallibriItem_() {
+    return {
+      totalYandexCpc: 0,
+      leadA: 0,
+      leadB: 0,
+      leadC: 0,
+      spam: 0,
+      nonTarget: 0,
+      unknownClass: 0
+    };
+  },
+
+  upsertCheckRow_(sheet, apiDate, item) {
+    const ruDate = this.ruDate_(apiDate);
+    const row = this.findCheckRowByDate_(sheet, ruDate) || this.findCheckInsertRow_(sheet);
+    const comment = item.unknownClass > 0
+      ? 'Есть yandex/cpc без явного класса — не считаем лидом'
+      : (item.totalYandexCpc > 0 ? 'Статусы обновлены из Callibri; скользящие 7 дней перепроверены; B=' + item.leadB : 'Нет рекламных yandex/cpc; B=' + item.leadB);
+
+    sheet.getRange(row, 1, 1, 8).setValues([[
+      ruDate,
+      item.totalYandexCpc,
+      item.leadA,
+      item.leadC,
+      item.spam,
+      item.nonTarget,
+      'Записано',
+      comment
+    ]]);
+  },
+
+  findCheckRowByDate_(sheet, ruDate) {
+    const values = sheet.getRange(1, 1, sheet.getLastRow(), 1).getDisplayValues();
+    for (let i = 1; i < values.length; i++) {
+      if (String(values[i][0] || '').trim() === ruDate) return i + 1;
+    }
+    return 0;
+  },
+
+  findCheckInsertRow_(sheet) {
+    const values = sheet.getRange(1, 1, sheet.getLastRow(), 1).getDisplayValues();
+    for (let i = 1; i < values.length; i++) {
+      const text = String(values[i][0] || '').trim().toLowerCase();
+      if (text === 'итого') {
+        sheet.insertRowsBefore(i + 1, 1);
+        return i + 1;
       }
     }
-  }
+    return Math.max(sheet.getLastRow() + 1, 2);
+  },
 
-  // Новый блок ставим после последней заполненной строки в B.
-  const newTopRow = DB_VAG_V04_findLastFilledRowInColumnB_(sheet) + 4;
-  const rowsNeeded = template.headerOffset + 1 + 31 + template.afterTotalRows + 8;
-  if (sheet.getMaxRows() < newTopRow + rowsNeeded) {
-    sheet.insertRowsAfter(sheet.getMaxRows(), newTopRow + rowsNeeded - sheet.getMaxRows());
-  }
-  return newTopRow;
-}
+  readCallibriCheck_(sheet) {
+    const values = sheet.getDataRange().getDisplayValues();
+    const result = {};
 
-function DB_VAG_V04_findLastFilledRowInColumnB_(sheet) {
-  const lastRow = Math.max(sheet.getLastRow(), 1);
-  const values = sheet.getRange(1, 2, lastRow, 1).getDisplayValues();
+    for (let r = 1; r < values.length; r++) {
+      const row = values[r];
+      const date = String(row[0] || '').trim();
+      if (!/^\d{2}\.\d{2}\.\d{4}$/.test(date)) continue;
 
-  for (let i = values.length - 1; i >= 0; i--) {
-    if (String(values[i][0]).trim() !== '') return i + 1;
-  }
-
-  return 1;
-}
-
-function DB_VAG_V04_getMayTemplateInfo_(sheet) {
-  const topRow = DB_VAG_V04_findMonthTopRowByLabel_(sheet, 'Май 2026');
-  if (!topRow) {
-    throw new Error('Не нашла шаблонный блок "Май 2026" на листе ДБ. Нужен майский блок для копирования форматирования.');
-  }
-
-  const headerRow = DB_VAG_V04_findHeaderRowInBlock_(sheet, topRow);
-  if (!headerRow) {
-    throw new Error('Не нашла шапку с "Дата" в майском блоке.');
-  }
-
-  const totalRow = DB_VAG_V04_findTotalRowAfter_(sheet, headerRow);
-  if (!totalRow) {
-    throw new Error('Не нашла строку ИТОГО в майском блоке.');
-  }
-
-  const headerOffset = headerRow - topRow;
-  const dataStartRow = headerRow + 1;
-  const templateDays = Math.max(1, totalRow - dataStartRow);
-  const afterTotalRows = 8;
-
-  return {
-    topRow: topRow,
-    headerRow: headerRow,
-    headerOffset: headerOffset,
-    dataStartRow: dataStartRow,
-    totalRow: totalRow,
-    templateDays: templateDays,
-    afterTotalRows: afterTotalRows
-  };
-}
-
-function DB_VAG_V04_findMonthTopRowByLabel_(sheet, label) {
-  const lastRow = Math.max(sheet.getLastRow(), 1);
-  const values = sheet.getRange(1, 2, lastRow, 1).getDisplayValues();
-
-  for (let i = 0; i < values.length; i++) {
-    if (String(values[i][0]).trim() === label) return i + 1;
-  }
-
-  return 0;
-}
-
-function DB_VAG_V04_findHeaderRowInBlock_(sheet, topRow) {
-  const maxRow = Math.min(sheet.getLastRow(), topRow + 20);
-  const width = DB_VAG_V04_CONFIG.TABLE_WIDTH;
-
-  for (let row = topRow; row <= maxRow; row++) {
-    const values = sheet.getRange(row, DB_VAG_V04_CONFIG.START_COLUMN, 1, width).getDisplayValues()[0];
-    const normalized = values.map(value => DB_VAG_V04_normalize_(value));
-    if (normalized.indexOf('дата') !== -1 && normalized.some(value => value.indexOf('показы') !== -1)) {
-      return row;
+      result[date] = {
+        spam: this.num_(row[4]),
+        nonTarget: this.num_(row[5]),
+        leadA: this.num_(row[2]),
+        leadC: this.num_(row[3])
+      };
     }
-  }
 
-  return 0;
-}
+    return result;
+  },
 
-function DB_VAG_V04_findTotalRowAfter_(sheet, headerRow) {
-  const maxRow = Math.min(sheet.getLastRow(), headerRow + 90);
+  writeDbDate_(sheet, apiDate, item) {
+    const headerRow = TDM_DB.findHeaderRowForMonth_(sheet, apiDate);
+    const headerMap = TDM_DB.getHeaderMap_(sheet, headerRow);
+    const sheetRow = TDM_DB.findDateRow_(sheet, headerMap.date, headerRow, apiDate);
 
-  for (let row = headerRow + 1; row <= maxRow; row++) {
-    const value = DB_VAG_V04_normalize_(sheet.getRange(row, DB_VAG_V04_CONFIG.START_COLUMN).getDisplayValue());
-    if (value === 'итого') return row;
-  }
-
-  return 0;
-}
-
-function DB_VAG_V04_prepareBlockAreaFromTemplate_(sheet, topRow, template, daysInMonth) {
-  const width = DB_VAG_V04_CONFIG.TABLE_WIDTH;
-  const startCol = DB_VAG_V04_CONFIG.START_COLUMN;
-  const rowsNeeded = template.headerOffset + 1 + daysInMonth + 1 + template.afterTotalRows;
-
-  if (sheet.getMaxRows() < topRow + rowsNeeded + 5) {
-    sheet.insertRowsAfter(sheet.getMaxRows(), topRow + rowsNeeded + 5 - sheet.getMaxRows());
-  }
-
-  // Очищаем старый/кривой блок в зоне B:U.
-  sheet.getRange(topRow, startCol, Math.max(DB_VAG_V04_CONFIG.CLEAR_ROWS, rowsNeeded + 5), width)
-    .clearContent()
-    .breakApart()
-    .setBackground('#ffffff')
-    .setFontColor('#000000')
-    .setFontWeight('normal')
-    .setFontSize(10)
-    .setWrap(false)
-    .setBorder(false, false, false, false, false, false);
-
-  // Копируем формат верхней части майского блока до шапки включительно.
-  const topRows = template.headerOffset + 1;
-  sheet.getRange(template.topRow, startCol, topRows, width)
-    .copyTo(sheet.getRange(topRow, startCol, topRows, width), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
-
-  for (let i = 0; i < topRows; i++) {
-    sheet.setRowHeight(topRow + i, sheet.getRowHeight(template.topRow + i));
-  }
-
-  const targetHeaderRow = topRow + template.headerOffset;
-  const targetDataStartRow = targetHeaderRow + 1;
-  const targetTotalRow = targetDataStartRow + daysInMonth;
-
-  // Копируем формат строк дней из мая. Если дней меньше/больше, берём ближайшую строку шаблона.
-  for (let i = 0; i < daysInMonth; i++) {
-    const sourceRow = template.dataStartRow + Math.min(i, template.templateDays - 1);
-    const targetRow = targetDataStartRow + i;
-    sheet.getRange(sourceRow, startCol, 1, width)
-      .copyTo(sheet.getRange(targetRow, startCol, 1, width), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
-    sheet.setRowHeight(targetRow, sheet.getRowHeight(sourceRow));
-  }
-
-  // ИТОГО и служебные строки ниже — из майского блока.
-  sheet.getRange(template.totalRow, startCol, 1, width)
-    .copyTo(sheet.getRange(targetTotalRow, startCol, 1, width), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
-  sheet.setRowHeight(targetTotalRow, sheet.getRowHeight(template.totalRow));
-
-  if (template.afterTotalRows > 0) {
-    sheet.getRange(template.totalRow + 1, startCol, template.afterTotalRows, width)
-      .copyTo(sheet.getRange(targetTotalRow + 1, startCol, template.afterTotalRows, width), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
-
-    for (let i = 0; i < template.afterTotalRows; i++) {
-      sheet.setRowHeight(targetTotalRow + 1 + i, sheet.getRowHeight(template.totalRow + 1 + i));
+    if (!sheetRow) throw new Error('Не найдена дата в ДБ: ' + apiDate);
+    if (this.num_(item.leadB) > 0 && !headerMap.callibriLeadB) {
+      throw new Error('Callibri Lead B=' + item.leadB + ', но в ДБ нет отдельной колонки Лид_Квал_B. Значение не прибавлено к A.');
     }
-  }
-}
 
-function DB_VAG_V04_writeMonthHeader_(sheet, topRow, monthLabel, period, template, totalRow) {
-  const startCol = DB_VAG_V04_CONFIG.START_COLUMN;
-  const width = DB_VAG_V04_CONFIG.TABLE_WIDTH;
-  const periodRow = topRow + 1;
-  const daysTotalRow = topRow + 2;
-  const daysPassedRow = topRow + 3;
-  const daysLeftRow = topRow + 4;
-  const reportDateRow = topRow + 5;
-  const budgetRow = topRow + template.headerOffset - 2;
-
-  // Верхний блок B:S как в майском блоке: месяц + сводные формулы по ИТОГО.
-  sheet.getRange(topRow, startCol, 1, width).clearContent();
-  sheet.getRange(topRow, 2).setValue(monthLabel);
-
-  sheet.getRange(topRow, 7).setValue('Расход');
-  sheet.getRange(topRow, 8).setFormula('=F' + totalRow);
-  sheet.getRange(topRow, 9).setValue('Клики');
-  sheet.getRange(topRow, 10).setFormula('=D' + totalRow);
-  sheet.getRange(topRow, 11).setValue('cpc');
-  sheet.getRange(topRow, 12).setFormula('=H' + totalRow);
-  sheet.getRange(topRow, 14).setValue('Кол-во Лид');
-  sheet.getRange(topRow, 15).setFormula('=R' + totalRow);
-  sheet.getRange(topRow, 16).setValue('CR');
-  sheet.getRange(topRow, 17).setFormula('=S' + totalRow);
-  sheet.getRange(topRow, 18).setValue('Факт CPA');
-  sheet.getRange(topRow, 19).setFormula('=T' + totalRow);
-
-  // Блок периода РК / дней / даты отчёта как в строках 128–133 майского блока.
-  sheet.getRange(periodRow, 2).setValue('Период РК');
-  sheet.getRange(periodRow, 3).setValue(DB_VAG_V04_parseApiDate_(period.monthStart));
-  sheet.getRange(periodRow, 4).setValue(DB_VAG_V04_parseApiDate_(period.monthEnd));
-
-  sheet.getRange(daysTotalRow, 2).setValue('Дней всего');
-  sheet.getRange(daysTotalRow, 3).setFormula('=D' + periodRow + '-C' + periodRow + '+1');
-
-  sheet.getRange(daysPassedRow, 2).setValue('Дней прошло');
-  sheet.getRange(daysPassedRow, 3).setFormula('=C' + daysTotalRow + '-C' + daysLeftRow);
-  sheet.getRange(daysPassedRow, 4).setFormula('=IFERROR(C' + daysPassedRow + '/C' + daysTotalRow + ';0)');
-
-  sheet.getRange(daysLeftRow, 2).setValue('Осталось');
-  sheet.getRange(daysLeftRow, 3).setFormula('=MAX(0;D' + periodRow + '-TODAY())');
-  sheet.getRange(daysLeftRow, 4).setFormula('=IFERROR(C' + daysLeftRow + '/C' + daysTotalRow + ';0)');
-
-  sheet.getRange(reportDateRow, 2).setValue('Дата отчета');
-  sheet.getRange(reportDateRow, 3).setFormula('=TODAY()');
-
-  // Нижний заголовок месяца перед таблицей: месяц / бюджет / резерв.
-  if (template.headerOffset > 1) {
-    sheet.getRange(topRow + 6, startCol, Math.max(0, template.headerOffset - 7), width).clearContent();
-  }
-  sheet.getRange(budgetRow, startCol, 1, width).clearContent();
-  sheet.getRange(budgetRow, 2).setValue(monthLabel);
-  sheet.getRange(budgetRow, 5).setValue('Бюджет с НДС');
-  sheet.getRange(budgetRow, 6).setValue(DB_VAG_V04_CONFIG.MONTH_BUDGET);
-  sheet.getRange(budgetRow, 7).setValue('10к резерв');
-
-  // Форматы верхнего блока.
-  sheet.getRange(periodRow, 3, 1, 2).setNumberFormat('dd.mm.yyyy');
-  sheet.getRange(reportDateRow, 3).setNumberFormat('dd.mm.yyyy');
-  sheet.getRange(daysPassedRow, 4, 2, 1).setNumberFormat('0.00%');
-  sheet.getRange(topRow, 8).setNumberFormat('[$р.-419]#,##0.00');
-  sheet.getRange(topRow, 10).setNumberFormat('#,##0');
-  sheet.getRange(topRow, 12).setNumberFormat('[$р.-419]#,##0.00');
-  sheet.getRange(topRow, 15).setNumberFormat('#,##0');
-  sheet.getRange(topRow, 17).setNumberFormat('0.00%');
-  sheet.getRange(topRow, 19).setNumberFormat('[$р.-419]#,##0.00');
-  sheet.getRange(budgetRow, 6).setNumberFormat('[$р.-419]#,##0.00');
-}
-
-function DB_VAG_V04_writeTableHeader_(sheet, headerRow) {
-  const headers = [
-    'Дата',
-    'Показы',
-    'Клики',
-    'Расход План c НДС',
-    'Расход ФАКТ с НДС (руб.)',
-    'CTR',
-    'CPC',
-    'B-B_60сек+2стр (555861179)',
-    'Клик на 79110008835 (511787501)',
-    'Клик на 79110008865 (511788019)',
-    'Клик на Макс (511788150)',
-    'Успешно пройден слайдер для перехода в TG (511791937)',
-    'Клик по кнопке "Маршрут" (547214611)',
-    'Звонки, количество из ЮИС',
-    'Качественные звонки из ЮИС',
-    'Заявки, количество из ЮИС',
-    'Факт сумма конверсий',
-    'CR',
-    'Стоимость факт CPA',
-    'Сумма по неделям'
-  ];
-
-  sheet.getRange(headerRow, 2, 1, headers.length).setValues([headers]);
-}
-
-function DB_VAG_V04_writeDailyRows_(sheet, dataStartRow, year, month, daysInMonth, directByDate, goalsByDate, uisByDate, reportDateTo) {
-  const rows = [];
-  const reportEndDate = DB_VAG_V04_parseApiDate_(reportDateTo);
-
-  for (let day = 1; day <= daysInMonth; day++) {
-    const date = new Date(year, month - 1, day);
-    const apiDate = Utilities.formatDate(date, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy-MM-dd');
-    const isFuture = date > reportEndDate;
-    const direct = directByDate[apiDate] || { impressions: '', clicks: '', cost: '' };
-    const goals = goalsByDate[apiDate] || DB_VAG_V04_emptyGoals_();
-    const uis = uisByDate[apiDate] || DB_VAG_V04_emptyUisDailyRow_();
-
-    rows.push([
-      DB_VAG_V04_formatDateRuFull_(apiDate),
-      isFuture ? '' : direct.impressions,
-      isFuture ? '' : direct.clicks,
-      DB_VAG_V04_CONFIG.MONTH_BUDGET / daysInMonth,
-      isFuture ? '' : direct.cost,
-      '',
-      '',
-      isFuture ? '' : DB_VAG_V04_blankZero_(goals.bb60sec2pages),
-      isFuture ? '' : DB_VAG_V04_blankZero_(goals.phone8835),
-      isFuture ? '' : DB_VAG_V04_blankZero_(goals.phone8865),
-      isFuture ? '' : DB_VAG_V04_blankZero_(goals.max),
-      isFuture ? '' : DB_VAG_V04_blankZero_(goals.telegramSlider),
-      isFuture ? '' : DB_VAG_V04_blankZero_(goals.route),
-      isFuture ? '' : DB_VAG_V04_blankZero_(uis.callsTotalFromUis),
-      isFuture ? '' : DB_VAG_V04_blankZero_(uis.qualityCallsFromUis),
-      isFuture ? '' : DB_VAG_V04_blankZero_(uis.leadsFromUis),
-      '',
-      '',
-      '',
-      ''
+    this.setGoalsBatch_(sheet, sheetRow, [
+      { col: headerMap.callibriSpam, value: item.spam, name: 'Callibri Spam' },
+      { col: headerMap.callibriNonTarget, value: item.nonTarget, name: 'Callibri NonTarget' },
+      { col: headerMap.callibriLeadA, value: item.leadA, name: 'Callibri Lead A' },
+      { col: headerMap.callibriLeadB, value: item.leadB, name: 'Callibri Lead B' },
+      { col: headerMap.callibriLeadC, value: item.leadC, name: 'Callibri Lead C' }
     ]);
-  }
+  },
 
-  sheet.getRange(dataStartRow, 2, rows.length, DB_VAG_V04_CONFIG.TABLE_WIDTH).setValues(rows);
+  setGoalsBatch_(sheet, row, goals) {
+    const safeGoals = (goals || [])
+      .filter(goal => goal && goal.col > 0)
+      .sort((a, b) => a.col - b.col);
 
-  for (let i = 0; i < daysInMonth; i++) {
-    const row = dataStartRow + i;
-    sheet.getRange(row, 7).setFormula('=IFERROR(D' + row + '/C' + row + ';0)');   // G CTR
-    sheet.getRange(row, 8).setFormula('=IFERROR(F' + row + '/D' + row + ';0)');   // H CPC
-    sheet.getRange(row, 18).setFormula('=SUM(P' + row + ':Q' + row + ')');         // R Fact conversions = P + Q
-    sheet.getRange(row, 19).setFormula('=IFERROR(R' + row + '/D' + row + ';0)');   // S CR
-    sheet.getRange(row, 20).setFormula('=IFERROR(F' + row + '/R' + row + ';0)');   // T CPA
-
-    const apiDate = Utilities.formatDate(new Date(year, month - 1, i + 1), DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy-MM-dd');
-    const date = DB_VAG_V04_parseApiDate_(apiDate);
-    const isSunday = date.getDay() === 0;
-    const isLastDay = i + 1 === daysInMonth;
-    if (isSunday || isLastDay) {
-      const weekStartRow = Math.max(dataStartRow, row - (date.getDay() === 0 ? 6 : date.getDay() - 1));
-      sheet.getRange(row, 21).setFormula('=SUM(R' + weekStartRow + ':R' + row + ')');
-    }
-  }
-}
-
-function DB_VAG_V04_writeTotalsAndPlan_(sheet, totalRow, dataStartRow, dataEndRow, period) {
-  sheet.getRange(totalRow, 2).setValue('ИТОГО');
-
-  const sumColumns = [3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
-  sumColumns.forEach(col => {
-    const letter = DB_VAG_V04_columnToLetter_(col);
-    sheet.getRange(totalRow, col).setFormula('=SUBTOTAL(9;' + letter + dataStartRow + ':' + letter + dataEndRow + ')');
-  });
-
-  sheet.getRange(totalRow, 7).setFormula('=IFERROR(D' + totalRow + '/C' + totalRow + ';0)');
-  sheet.getRange(totalRow, 8).setFormula('=IFERROR(F' + totalRow + '/D' + totalRow + ';0)');
-  sheet.getRange(totalRow, 19).setFormula('=IFERROR(R' + totalRow + '/D' + totalRow + ';0)');
-  sheet.getRange(totalRow, 20).setFormula('=IFERROR(F' + totalRow + '/R' + totalRow + ';0)');
-
-  const planStart = totalRow + 1;
-  const planRows = [
-    ['ПЛАН по МП', '', '', DB_VAG_V04_CONFIG.MONTH_BUDGET, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
-    ['Остаток до конца месяца', '', '', '', '=E' + planStart + '-F' + totalRow, '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
-    ['Разница в бюджете', '', '', '', '=E' + planStart + '-F' + totalRow, '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
-    ['План и факт расход на вчера', '', '', '=E' + totalRow, '=F' + totalRow, '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
-    ['План и факт на дату %', '', '', '=IFERROR(E' + totalRow + '/E' + planStart + ';0)', '=IFERROR(F' + totalRow + '/E' + planStart + ';0)', '=IFERROR(F' + totalRow + '/E' + planStart + ';0)', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
-  ];
-
-  sheet.getRange(planStart, 2, planRows.length, DB_VAG_V04_CONFIG.TABLE_WIDTH).setValues(planRows);
-}
-
-// =====================
-// ДИРЕКТ: ДНЕВНЫЕ МЕТРИКИ
-// =====================
-
-function DB_VAG_V04_getDirectDailyStats_(dateFrom, dateTo) {
-  const reportBody = {
-    params: {
-      SelectionCriteria: {
-        DateFrom: dateFrom,
-        DateTo: dateTo
-      },
-      FieldNames: [
-        'Date',
-        'CampaignName',
-        'Impressions',
-        'Clicks',
-        'Cost'
-      ],
-      OrderBy: [
-        { Field: 'Date', SortOrder: 'ASCENDING' }
-      ],
-      ReportName: 'db_daily_v4_' + DB_VAG_V04_CONFIG.CLIENT_LOGIN + '_' + dateFrom + '_' + dateTo + '_' + Utilities.getUuid(),
-      ReportType: 'CAMPAIGN_PERFORMANCE_REPORT',
-      DateRangeType: 'CUSTOM_DATE',
-      Format: 'TSV',
-      IncludeVAT: 'YES',
-      IncludeDiscount: 'NO'
-    }
-  };
-
-  const text = DB_VAG_V04_requestDirectReport_(reportBody);
-  return DB_VAG_V04_parseDirectDailyTsv_(text);
-}
-
-function DB_VAG_V04_requestDirectReport_(reportBody) {
-  const token = PropertiesService.getScriptProperties().getProperty('YANDEX_TOKEN');
-  if (!token) throw new Error('Не найден YANDEX_TOKEN в свойствах скрипта');
-
-  const url = 'https://api.direct.yandex.com/json/v5/reports';
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      Authorization: 'Bearer ' + token,
-      'Client-Login': DB_VAG_V04_CONFIG.CLIENT_LOGIN,
-      'Accept-Language': 'ru',
-      processingMode: 'auto',
-      returnMoneyInMicros: 'false',
-      skipReportHeader: 'true',
-      skipColumnHeader: 'false',
-      skipReportSummary: 'true'
-    },
-    payload: JSON.stringify(reportBody),
-    muteHttpExceptions: true
-  };
-
-  for (let attempt = 1; attempt <= 10; attempt++) {
-    const response = UrlFetchApp.fetch(url, options);
-    const code = response.getResponseCode();
-    const text = response.getContentText();
-
-    if (code === 200) return text;
-    if (code === 201 || code === 202) {
-      Utilities.sleep(5000);
-      continue;
-    }
-    throw new Error('Ошибка Директа: ' + code + '\n' + text);
-  }
-
-  throw new Error('Отчёт Директа долго формируется. Запусти позже.');
-}
-
-function DB_VAG_V04_parseDirectDailyTsv_(tsvText) {
-  const lines = String(tsvText || '').trim().split(/\r?\n/);
-  if (lines.length < 2) return {};
-
-  const headers = lines[0].split('\t').map(h => String(h).replace(/^\uFEFF/, '').trim());
-  const idx = {};
-  headers.forEach((h, i) => idx[h] = i);
-
-  const result = {};
-
-  lines.slice(1).forEach(line => {
-    if (!String(line).trim()) return;
-    const row = line.split('\t');
-    const date = String(row[idx['Date']] || '').trim();
-    if (!date) return;
-
-    if (!result[date]) {
-      result[date] = { impressions: 0, clicks: 0, cost: 0 };
+    if (!safeGoals.length) {
+      throw new Error('В ДБ не найдены Callibri-колонки для записи, строка ' + row);
     }
 
-    result[date].impressions += DB_VAG_V04_toNumber_(row[idx['Impressions']]);
-    result[date].clicks += DB_VAG_V04_toNumber_(row[idx['Clicks']]);
-    result[date].cost += DB_VAG_V04_toNumber_(row[idx['Cost']]);
-  });
-
-  return result;
-}
-
-// =====================
-// МЕТРИКА: ЦЕЛИ ПО ДНЯМ И КАМПАНИЯМ ДИРЕКТА
-// =====================
-
-function DB_VAG_V04_getMetrikaGoalsByDate_(dateFrom, dateTo) {
-  const token = DB_VAG_V04_getMetrikaToken_();
-  if (!token) throw new Error('Не найден METRIKA_TOKEN или YANDEX_TOKEN в свойствах скрипта');
-
-  const goalEntries = DB_VAG_V04_getGoalEntries_();
-  const metrics = goalEntries.map(entry => 'ym:s:goal' + entry.id + 'reaches').join(',');
-
-  const params = {
-    ids: DB_VAG_V04_CONFIG.METRIKA_COUNTER_ID,
-    date1: dateFrom,
-    date2: dateTo,
-    metrics: metrics,
-    dimensions: 'ym:s:date,ym:s:' + DB_VAG_V04_CONFIG.METRIKA_ATTRIBUTION + 'DirectClickOrderName',
-    accuracy: 'full',
-    limit: '100000',
-    lang: 'ru'
-  };
-
-  const url = 'https://api-metrika.yandex.net/stat/v1/data?' + DB_VAG_V04_toQueryString_(params);
-  const response = UrlFetchApp.fetch(url, {
-    method: 'get',
-    headers: {
-      Authorization: 'OAuth ' + token
-    },
-    muteHttpExceptions: true
-  });
-
-  const code = response.getResponseCode();
-  const text = response.getContentText();
-
-  if (code !== 200) {
-    throw new Error('Ошибка Метрики: ' + code + '\n' + text);
-  }
-
-  const json = JSON.parse(text);
-  const result = {};
-
-  (json.data || []).forEach(item => {
-    const dimensions = item.dimensions || [];
-    const date = dimensions[0] && dimensions[0].name ? String(dimensions[0].name).trim() : '';
-    const campaignName = dimensions[1] && dimensions[1].name ? String(dimensions[1].name).trim() : '';
-    const cleanCampaign = DB_VAG_V04_cleanCampaignName_(campaignName);
-
-    if (!date || !cleanCampaign || cleanCampaign === 'none' || cleanCampaign === 'not set') return;
-
-    if (!result[date]) result[date] = DB_VAG_V04_emptyGoals_();
-
-    goalEntries.forEach((entry, index) => {
-      result[date][entry.key] += DB_VAG_V04_toNumber_((item.metrics || [])[index]);
+    safeGoals.forEach(goal => {
+      const formula = sheet.getRange(row, goal.col).getFormula();
+      if (formula) {
+        throw new Error(goal.name + ': ячейка содержит формулу, строка ' + row + ', колонка ' + goal.col);
+      }
     });
-  });
 
-  return result;
-}
+    let group = [];
+    const flushGroup = () => {
+      if (!group.length) return;
 
-function DB_VAG_V04_getMetrikaToken_() {
-  const props = PropertiesService.getScriptProperties();
-  return props.getProperty('METRIKA_TOKEN') || props.getProperty('YANDEX_TOKEN');
-}
+      const startCol = group[0].col;
+      const values = [group.map(goal => {
+        const number = Number(goal.value || 0);
+        return number > 0 ? number : '-';
+      })];
 
-function DB_VAG_V04_getGoalEntries_() {
-  return [
-    { key: 'bb60sec2pages', id: DB_VAG_V04_CONFIG.GOALS.bb60sec2pages },
-    { key: 'phone8835', id: DB_VAG_V04_CONFIG.GOALS.phone8835 },
-    { key: 'phone8865', id: DB_VAG_V04_CONFIG.GOALS.phone8865 },
-    { key: 'max', id: DB_VAG_V04_CONFIG.GOALS.max },
-    { key: 'telegramSlider', id: DB_VAG_V04_CONFIG.GOALS.telegramSlider },
-    { key: 'route', id: DB_VAG_V04_CONFIG.GOALS.route }
-  ];
-}
+      sheet.getRange(row, startCol, 1, group.length).setValues(values);
+      group = [];
+    };
 
-function DB_VAG_V04_emptyGoals_() {
-  return {
-    bb60sec2pages: 0,
-    phone8835: 0,
-    phone8865: 0,
-    max: 0,
-    telegramSlider: 0,
-    route: 0
-  };
-}
+    safeGoals.forEach(goal => {
+      if (!group.length || goal.col === group[group.length - 1].col + 1) {
+        group.push(goal);
+        return;
+      }
 
-function DB_VAG_V04_cleanCampaignName_(name) {
-  return String(name || '')
-    .replace(/\s*\(N-\d+\)\s*$/i, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-}
+      flushGroup();
+      group.push(goal);
+    });
 
-// =====================
-// UIS: ЗВОНКИ И ЗАЯВКИ ДЛЯ O:P:Q
-// =====================
+    flushGroup();
+  },
 
-function DB_VAG_V04_getUisDailyDataForDb_(dateFrom, dateTo) {
-  const token = DB_VAG_V04_getUisToken_();
-  const result = DB_VAG_V04_makeEmptyUisDailyMap_(dateFrom, dateTo);
+  setGoal_(sheet, row, col, value) {
+    this.setGoalsBatch_(sheet, row, [{ col: col, value: value, name: 'Callibri goal' }]);
+  },
 
-  const calls = DB_VAG_V04_getUisReportRows_('get.calls_report', dateFrom, dateTo, DB_VAG_V04_getUisCallFields_(), token);
-  calls.forEach(row => {
-    if (!DB_VAG_V04_isYandexDirectUisRow_(row)) return;
-    const date = DB_VAG_V04_getUisRowDate_(row);
-    if (!result[date]) return;
+  yesterdayAndLast3Workdays_() {
+    const result = [];
+    const seen = {};
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
 
-    result[date].callsTotalFromUis += 1;
-    if (DB_VAG_V04_isQualityUisRow_(row)) {
-      result[date].qualityCallsFromUis += 1;
+    const addDate = date => {
+      const apiDate = Utilities.formatDate(date, this.timezone, 'yyyy-MM-dd');
+      if (!seen[apiDate]) {
+        seen[apiDate] = true;
+        result.push(apiDate);
+      }
+    };
+
+    // Вчера обновляем каждый день, даже если это выходной.
+    addDate(yesterday);
+
+    const cursor = new Date(yesterday);
+    while (result.length < 4) {
+      const day = cursor.getDay();
+      if (day !== 0 && day !== 6) {
+        addDate(cursor);
+      }
+      cursor.setDate(cursor.getDate() - 1);
     }
-  });
 
-  const leads = DB_VAG_V04_getUisReportRows_('get.offline_messages_report', dateFrom, dateTo, DB_VAG_V04_getUisLeadFields_(), token);
-  leads.forEach(row => {
-    if (!DB_VAG_V04_isYandexDirectUisRow_(row)) return;
-    const date = DB_VAG_V04_getUisRowDate_(row);
-    if (!result[date]) return;
+    return result;
+  },
 
-    result[date].leadsFromUis += 1;
-  });
+  ruDate_(apiDate) {
+    return Utilities.formatDate(TDM_DB.parseApiDate_(apiDate), this.timezone, 'dd.MM.yyyy');
+  },
 
-  return result;
-}
-
-function DB_VAG_V04_getUisToken_() {
-  const token = String(PropertiesService.getScriptProperties().getProperty(DB_VAG_V04_CONFIG.UIS_TOKEN_PROPERTY) || '').trim();
-  if (!token) {
-    throw new Error('Не найден UIS API token в Script Properties. Ожидаемое имя свойства: ' + DB_VAG_V04_CONFIG.UIS_TOKEN_PROPERTY);
+  num_(value) {
+    return TDM_DB.toNumber_(value);
   }
-  return token;
+};
+
+function tdmAutoWeeklyMoReports20260707() {
+  TDM_AUTO_20260707.weekly();
 }
 
-function DB_VAG_V04_getUisReportRows_(method, dateFrom, dateTo, fields, token, customLimit) {
-  let activeFields = fields.slice();
+function archived_tdmInstallAutoReportTriggers20260707() {
+  TDM_AUTO_20260707.installTriggers();
+}
 
-  while (true) {
-    const limit = customLimit || 1000;
-    let offset = 0;
-    let rows = [];
+const TDM_AUTO_20260707 = {
+  spreadsheetId: '1zXDDfiRYHJE34iOJg-QfAC0bvoTKMIAuVMfsJS0z5Dg',
+  workSheetName: 'Рабочие',
+  timezone: 'Europe/Moscow',
+  dailyHandler: 'tdmAutoDailyReports20260707',
+  weeklyHandler: 'tdmAutoWeeklyMoReports20260707',
+
+  daily() {
+    const startedAt = new Date();
+    const results = [];
+
+    results.push(this.safeCall_('fillTdmDbYesterday'));
+    results.push(this.safeCall_('tdmDailyCallibriSync20260708'));
+    // Региональный контур возвращён к детальному листу «Регионы_города».
+    // Упрощённый отчёт из названий РК не запускаем в daily runtime.
+    results.push(this.safeCall_('tdmUpdateRegionsCitiesReport'));
+    results.push(this.safeCall_('updateRegionsCitiesReport'));
+    results.push(this.safeCall_('tdmUpdateWeeklyDynamicCampaignLists20260708'));
+    results.push(this.safeCall_('tdmInstallAllDynamicCommentsQualC20260708'));
+
+    this.writeStatus_('daily', startedAt, results);
+  },
+
+  weekly() {
+    const startedAt = new Date();
+    const results = [];
+
+    results.push(this.safeCall_('fillTdmEnoPreviousFullWeek'));
+    results.push(this.safeCall_('fillTdmEnoPreviousFullMonthReport'));
+    results.push(this.safeCall_('tdmStrictValidateDbEnoEmoGoals20260707'));
+    results.push(this.safeCall_('tdmFixEnoEmoComments20260707'));
+
+    this.writeStatus_('weekly', startedAt, results);
+  },
+
+  installTriggers() {
+    this.deleteOwnTriggers_();
+
+    ScriptApp.newTrigger(this.dailyHandler)
+      .timeBased()
+      .everyDays(1)
+      .atHour(8)
+      .nearMinute(20)
+      .inTimezone(this.timezone)
+      .create();
+
+    ScriptApp.newTrigger(this.weeklyHandler)
+      .timeBased()
+      .onWeekDay(ScriptApp.WeekDay.MONDAY)
+      .atHour(9)
+      .nearMinute(20)
+      .inTimezone(this.timezone)
+      .create();
+
+    this.writeStatus_('install', new Date(), [
+      { name: this.dailyHandler, ok: true, message: 'ежедневно около 08:20 МСК' },
+      { name: this.weeklyHandler, ok: true, message: 'понедельник около 09:20 МСК' }
+    ]);
+  },
+
+  deleteOwnTriggers_() {
+    const handlers = [this.dailyHandler, this.weeklyHandler];
+
+    ScriptApp.getProjectTriggers().forEach(trigger => {
+      if (handlers.indexOf(trigger.getHandlerFunction()) !== -1) {
+        ScriptApp.deleteTrigger(trigger);
+      }
+    });
+  },
+
+  safeCall_(functionName) {
+    const startedAt = new Date();
 
     try {
-      while (true) {
-        const payload = DB_VAG_V04_buildUisRequest_(method, {
-          date_from: dateFrom + ' 00:00:00',
-          date_till: dateTo + ' 23:59:59',
-          limit: limit,
-          offset: offset,
-          fields: activeFields
-        }, token);
+      const fn = this.getFunctionByName_(functionName);
 
-        const response = DB_VAG_V04_fetchUis_(payload);
-        const json = DB_VAG_V04_parseUisJson_(response.text);
-        const pageRows = DB_VAG_V04_extractUisRows_(json);
-
-        rows = rows.concat(pageRows);
-        if (customLimit || pageRows.length < limit) return rows;
-        offset += limit;
+      if (typeof fn !== 'function') {
+        return { name: functionName, ok: false, message: 'function_not_found', seconds: 0 };
       }
-    } catch (error) {
-      const removedField = DB_VAG_V04_removeInvalidUisField_(activeFields, error);
-      if (!removedField) throw error;
-      Logger.log('UIS field skipped for ' + method + ': ' + removedField);
+
+      fn();
+
+      return {
+        name: functionName,
+        ok: true,
+        message: 'ok',
+        seconds: Math.round((new Date() - startedAt) / 1000)
+      };
+    } catch (e) {
+      return {
+        name: functionName,
+        ok: false,
+        message: String(e && e.message ? e.message : e),
+        seconds: Math.round((new Date() - startedAt) / 1000)
+      };
     }
+  },
+
+  getFunctionByName_(functionName) {
+    return Function('return (typeof ' + functionName + ' === "function") ? ' + functionName + ' : null;')();
+  },
+
+  writeStatus_(mode, startedAt, results) {
+    const ss = SpreadsheetApp.openById(this.spreadsheetId);
+    const sheet = ss.getSheetByName(this.workSheetName) || ss.insertSheet(this.workSheetName);
+    const now = new Date();
+    const okCount = results.filter(item => item.ok).length;
+    const failCount = results.length - okCount;
+    const status = failCount ? 'FAIL_PARTIAL' : 'OK';
+    const details = results.map(item => {
+      return item.name + ': ' + (item.ok ? 'OK' : 'ERROR') + (item.message ? ' — ' + item.message : '');
+    }).join('\n');
+
+    const row = [
+      Utilities.formatDate(now, this.timezone, 'yyyy-MM-dd HH:mm:ss'),
+      mode,
+      status,
+      okCount,
+      failCount,
+      Utilities.formatDate(startedAt, this.timezone, 'yyyy-MM-dd HH:mm:ss'),
+      Math.round((now - startedAt) / 1000),
+      details
+    ];
+
+    sheet.getRange(Math.max(sheet.getLastRow() + 1, 6), 1, 1, row.length).setValues([row]);
   }
+};
+
+function tdmCallibriDailyHardSync20260709() {
+  return TDM_CALLIBRI_DAILY_20260709.run();
 }
 
-function DB_VAG_V04_buildUisRequest_(method, params, token) {
-  const safeParams = Object.assign({}, params, { access_token: token });
-  return {
-    jsonrpc: '2.0',
-    id: Utilities.getUuid(),
-    method: method,
-    params: safeParams
-  };
+function tdmInstallCallibriDailyHardTrigger20260709() {
+  return TDM_CALLIBRI_DAILY_20260709.installTriggers();
 }
 
-function DB_VAG_V04_fetchUis_(payload) {
-  const response = UrlFetchApp.fetch(DB_VAG_V04_CONFIG.UIS_API_URL, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  });
-  const code = response.getResponseCode();
-  const text = response.getContentText();
+const TDM_CALLIBRI_DAILY_20260709 = {
+  spreadsheetId: '1zXDDfiRYHJE34iOJg-QfAC0bvoTKMIAuVMfsJS0z5Dg',
+  workSheetName: 'Рабочие',
+  timezone: 'Europe/Moscow',
+  handler: 'tdmCallibriDailyHardSync20260709',
 
-  if (code < 200 || code >= 300) {
-    throw new Error('Ошибка UIS API: ' + code + '\n' + DB_VAG_V04_maskTokenInText_(text));
-  }
+  run() {
+    const startedAt = new Date();
+    let status = 'OK';
+    let message = 'ok';
+    let data = null;
 
-  return { code: code, text: text };
-}
-
-function DB_VAG_V04_parseUisJson_(text) {
-  const json = JSON.parse(text || '{}');
-  if (json.error) {
-    if (json.error.data && json.error.data.mnemonic === 'access_token_invalid') {
-      throw new Error('UIS API отклонил токен: access_token_invalid. Свойство UIS_TOKEN найдено, но его значение недействительное. Замени значение UIS_TOKEN в Script Properties на действующий API-токен UIS и запусти testUisApiConnection() ещё раз.');
+    try {
+      data = tdmDailyCallibriSync20260708();
+    } catch (e) {
+      status = 'ERROR';
+      message = String(e && e.message ? e.message : e);
     }
-    if (json.error.data && json.error.data.mnemonic === 'ip_not_whitelisted') {
-      const ip = json.error.data.params && json.error.data.params.ip ? json.error.data.params.ip : 'неизвестен';
-      throw new Error('UIS API отклонил запрос: IP не добавлен в whitelist. UIS увидел IP Google Apps Script: ' + ip + '. Добавь этот IP в разрешённые IP для API-токена UIS или отключи IP-ограничение для этого токена, затем запусти testUisApiConnection() ещё раз.');
+
+    this.writeStatus_(startedAt, status, message, data);
+
+    if (status !== 'OK') {
+      throw new Error(message);
     }
-    throw new Error('Ошибка UIS API: ' + JSON.stringify(json.error));
-  }
-  return json;
-}
 
-function DB_VAG_V04_extractUisRows_(json) {
-  const result = json && json.result ? json.result : json;
-  if (Array.isArray(result)) return result;
-  if (result && Array.isArray(result.data)) return result.data;
-  if (result && Array.isArray(result.rows)) return result.rows;
-  if (result && Array.isArray(result.items)) return result.items;
-  return [];
-}
+    return { ok: true, mode: 'callibri_daily_hard_sync', data: data };
+  },
 
-function DB_VAG_V04_getUisCallFields_() {
-  return [
-    'start_time',
-    'communication_type',
-    'communication_type_name',
-    'utm_source',
-    'utm_medium',
-    'utm_campaign',
-    'referrer',
-    'search_engine',
-    'visitor_source'
-  ];
-}
+  installTriggers() {
+    this.deleteOwnTriggers_();
 
-function DB_VAG_V04_getUisLeadFields_() {
-  return [
-    'date_time',
-    'create_time',
-    'communication_type',
-    'communication_type_name',
-    'utm_source',
-    'utm_medium',
-    'utm_campaign',
-    'referrer',
-    'search_engine',
-    'visitor_source'
-  ];
-}
+    ScriptApp.newTrigger(this.handler)
+      .timeBased()
+      .everyDays(1)
+      .atHour(9)
+      .nearMinute(10)
+      .inTimezone(this.timezone)
+      .create();
 
-function DB_VAG_V04_getUisRowDate_(row) {
-  const value = row.start_time || row.date_time || row.create_time || row.date || '';
-  const match = String(value).match(/\d{4}-\d{2}-\d{2}/);
-  return match ? match[0] : '';
-}
+    ScriptApp.newTrigger(this.handler)
+      .timeBased()
+      .everyDays(1)
+      .atHour(12)
+      .nearMinute(10)
+      .inTimezone(this.timezone)
+      .create();
 
-function DB_VAG_V04_isQualityUisRow_(row) {
-  const quality = DB_VAG_V04_normalize_(DB_VAG_V04_CONFIG.UIS_QUALITY_VALUE);
-  const values = [
-    row.communication_type,
-    row.communication_type_name,
-    row.appeal_type,
-    row.appeal_type_name,
-    row.contact_type,
-    row.contact_type_name
-  ];
-  return values.some(value => DB_VAG_V04_normalize_(value) === quality);
-}
+    this.writeStatus_(new Date(), 'INSTALL_OK', 'Callibri-only triggers: 09:10 + 12:10 МСК', null);
 
-function DB_VAG_V04_isYandexDirectUisRow_(row) {
-  const values = [
-    row.utm_source,
-    row.utm_medium,
-    row.utm_campaign,
-    row.referrer,
-    row.search_engine,
-    row.visitor_source,
-    row.source,
-    row.source_name,
-    row.channel,
-    row.channel_name
-  ].join(' ').toLowerCase();
+    return { ok: true, handler: this.handler, schedule: ['09:10 МСК', '12:10 МСК'] };
+  },
 
-  return values.indexOf('yandex') !== -1 ||
-    values.indexOf('яндекс') !== -1 ||
-    values.indexOf('direct') !== -1 ||
-    values.indexOf('директ') !== -1;
-}
-
-function DB_VAG_V04_makeEmptyUisDailyMap_(dateFrom, dateTo) {
-  const result = {};
-  const current = DB_VAG_V04_parseApiDate_(dateFrom);
-  const end = DB_VAG_V04_parseApiDate_(dateTo);
-
-  while (current <= end) {
-    const date = Utilities.formatDate(current, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy-MM-dd');
-    result[date] = DB_VAG_V04_emptyUisDailyRow_();
-    current.setDate(current.getDate() + 1);
-  }
-
-  return result;
-}
-
-function DB_VAG_V04_emptyUisDailyRow_() {
-  return {
-    callsTotalFromUis: 0,
-    qualityCallsFromUis: 0,
-    leadsFromUis: 0
-  };
-}
-
-function DB_VAG_V04_maskUisRowForLog_(row) {
-  const safe = {};
-  Object.keys(row || {}).forEach(key => {
-    const lower = String(key).toLowerCase();
-    if (lower.indexOf('phone') !== -1 || lower.indexOf('email') !== -1 || lower.indexOf('name') !== -1 || lower.indexOf('client') !== -1) {
-      safe[key] = '[hidden]';
-    } else {
-      safe[key] = row[key];
-    }
-  });
-  return safe;
-}
-
-function DB_VAG_V04_collectUisSourceDebugValues_(rows) {
-  const sourceKeys = [
-    'utm_source',
-    'utm_medium',
-    'utm_campaign',
-    'referrer',
-    'search_engine',
-    'source',
-    'source_name',
-    'channel',
-    'channel_name',
-    'communication_type',
-    'appeal_type',
-    'contact_type'
-  ];
-  const found = {};
-
-  rows.slice(0, 50).forEach(row => {
-    sourceKeys.forEach(key => {
-      if (row && row[key] !== undefined && row[key] !== null && String(row[key]).trim() !== '') {
-        if (!found[key]) found[key] = [];
-        const value = String(row[key]).trim();
-        if (found[key].indexOf(value) === -1 && found[key].length < 10) {
-          found[key].push(value);
-        }
+  deleteOwnTriggers_() {
+    ScriptApp.getProjectTriggers().forEach(trigger => {
+      if (trigger.getHandlerFunction() === this.handler) {
+        ScriptApp.deleteTrigger(trigger);
       }
     });
-  });
+  },
 
-  return found;
-}
+  writeStatus_(startedAt, status, message, data) {
+    const ss = SpreadsheetApp.openById(this.spreadsheetId);
+    const sheet = ss.getSheetByName(this.workSheetName) || ss.insertSheet(this.workSheetName);
+    const now = new Date();
+    const details = data ? JSON.stringify(data).slice(0, 45000) : message;
 
-function DB_VAG_V04_maskTokenInText_(text) {
-  const token = PropertiesService.getScriptProperties().getProperty(DB_VAG_V04_CONFIG.UIS_TOKEN_PROPERTY);
-  return token ? String(text || '').split(token).join('[UIS_TOKEN]') : String(text || '');
-}
-
-function DB_VAG_V04_removeInvalidUisField_(fields, error) {
-  const message = String(error && error.message ? error.message : error);
-  if (message.indexOf('invalid_parameter_value') === -1) return '';
-
-  const match = message.match(/"field"\s*:\s*"fields\[(\d+)\]"/);
-  if (!match) return '';
-
-  const index = Number(match[1]);
-  if (isNaN(index) || index < 0 || index >= fields.length) return '';
-
-  const removed = fields.splice(index, 1)[0];
-  if (!fields.length) {
-    throw new Error('UIS API отклонил все запрошенные поля для отчёта. Последнее отклонённое поле: ' + removed);
+    sheet.getRange(Math.max(sheet.getLastRow() + 1, 6), 1, 1, 8).setValues([[
+      Utilities.formatDate(now, this.timezone, 'yyyy-MM-dd HH:mm:ss'),
+      'callibri_daily_hard_sync',
+      status,
+      status === 'OK' || status === 'INSTALL_OK' ? 1 : 0,
+      status === 'OK' || status === 'INSTALL_OK' ? 0 : 1,
+      Utilities.formatDate(startedAt, this.timezone, 'yyyy-MM-dd HH:mm:ss'),
+      Math.round((now - startedAt) / 1000),
+      details
+    ]]);
   }
-  return removed;
+};
+
+function tdmCallibriDailyYesterdayOnly20260709() {
+  return TDM_CALLIBRI_STABLE_20260709.runYesterdayOnly();
 }
 
-function DB_VAG_V04_isProtectedDbRow_(row) {
-  return row === DB_VAG_V04_CONFIG.PROTECTED_ROWS.SKIP_ROW ||
-    row >= DB_VAG_V04_CONFIG.PROTECTED_ROWS.SKIP_FROM_ROW;
+function tdmCallibriEvery3DaysRecheck20260709() {
+  return {
+    ok: true,
+    mode: 'legacy_recheck_skipped',
+    message: 'Отдельная трёхдневная перепроверка отключена: её полностью заменяет ежедневное окно 7 дней.'
+  };
 }
 
-function DB_VAG_V04_assertMonthBlockSafeToRebuild_(startRow, endRow) {
-  if (startRow <= DB_VAG_V04_CONFIG.PROTECTED_ROWS.SKIP_ROW && endRow >= DB_VAG_V04_CONFIG.PROTECTED_ROWS.SKIP_ROW) {
-    throw new Error('Пересборка блока остановлена: диапазон затрагивает защищенную строку 234. Для текущего обновления используй fillDbYesterdayDaily_v4().');
-  }
-  if (endRow >= DB_VAG_V04_CONFIG.PROTECTED_ROWS.SKIP_FROM_ROW) {
-    throw new Error('Пересборка блока остановлена: диапазон затрагивает строки 242 и ниже. Для текущего обновления используй fillDbYesterdayDaily_v4().');
-  }
+function tdmCallibriRetryYesterdayUntilSuccess20260709() {
+  return TDM_CALLIBRI_STABLE_20260709.retryYesterdayUntilSuccessToday();
 }
 
-function DB_VAG_V04_updateCurrentMonthDailySafe_() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(DB_VAG_V04_CONFIG.SHEET_NAME);
-  if (!sheet) throw new Error('Не найден лист ' + DB_VAG_V04_CONFIG.SHEET_NAME);
+function tdmInstallCallibriStableTriggers20260709() {
+  return TDM_CALLIBRI_STABLE_20260709.installStableTriggers();
+}
 
-  const now = new Date();
-  const year = Number(Utilities.formatDate(now, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy'));
-  const month = Number(Utilities.formatDate(now, DB_VAG_V04_CONFIG.TIMEZONE, 'M'));
-  const monthLabel = DB_VAG_V04_getMonthLabel_(year, month);
-  const topRow = DB_VAG_V04_findMonthTopRowByLabel_(sheet, monthLabel);
-  if (!topRow) throw new Error('Не найден блок ДБ "' + monthLabel + '". Сначала создай месяц через createDbCurrentMonthFromMayTemplate_v4().');
+function tdmInstallCallibriRetryToday20260709() {
+  return TDM_CALLIBRI_STABLE_20260709.installRetryTodayAfter2h();
+}
 
-  const headerRow = DB_VAG_V04_findHeaderRowInBlock_(sheet, topRow);
-  const totalRow = DB_VAG_V04_findTotalRowAfter_(sheet, headerRow);
-  if (!headerRow || !totalRow) throw new Error('Не найдены шапка или строка ИТОГО в блоке "' + monthLabel + '".');
+const TDM_CALLIBRI_STABLE_20260709 = {
+  spreadsheetId: '1zXDDfiRYHJE34iOJg-QfAC0bvoTKMIAuVMfsJS0z5Dg',
+  workSheetName: 'Рабочие',
+  timezone: 'Europe/Moscow',
+  dailyHandler: 'tdmCallibriDailyYesterdayOnly20260709',
+  recheckHandler: 'tdmCallibriEvery3DaysRecheck20260709',
+  retryHandler: 'tdmCallibriRetryYesterdayUntilSuccess20260709',
+  oldHardHandler: 'tdmCallibriDailyHardSync20260709',
 
-  const period = DB_VAG_V04_getMonthPeriodForReport_(year, month);
-  const directByDate = DB_VAG_V04_getDirectDailyStats_(period.dateFrom, period.dateTo);
-  const goalsByDate = DB_VAG_V04_getMetrikaGoalsByDate_(period.dateFrom, period.dateTo);
-  const uisByDate = DB_VAG_V04_getUisDailyDataForDb_(period.dateFrom, period.dateTo);
-  const dataStartRow = headerRow + 1;
-  const reportEndDate = DB_VAG_V04_parseApiDate_(period.dateTo);
-  const daysInMonth = DB_VAG_V04_getDaysInMonth_(year, month);
+  runYesterdayOnly() {
+    const startedAt = new Date();
+    try {
+      const result = tdmDailyCallibriSync20260708();
+      this.writeStatus_(startedAt, 'callibri_rolling_7_days', 'OK', result);
+      return result;
+    } catch (e) {
+      const message = String(e && e.message ? e.message : e);
+      this.writeStatus_(startedAt, 'callibri_rolling_7_days', 'ERROR', message);
+      throw new Error(message);
+    }
+  },
 
-  for (let day = 1; day <= daysInMonth; day++) {
-    const date = new Date(year, month - 1, day);
-    if (date > reportEndDate) break;
+  runLast3WorkdaysOnly() {
+    return { ok: true, mode: 'legacy_recheck_skipped', coveredBy: this.dailyHandler };
+  },
 
-    const row = dataStartRow + day - 1;
-    if (row >= totalRow || DB_VAG_V04_isProtectedDbRow_(row)) {
-      Logger.log('DB row skipped by protection: ' + row);
-      continue;
+  retryYesterdayUntilSuccessToday() {
+    const startedAt = new Date();
+    try {
+      const result = this.runYesterdayOnly();
+      this.deleteTriggersFor_([this.retryHandler]);
+      this.writeStatus_(startedAt, 'callibri_retry_until_success_today', 'OK_STOP_RETRY', result);
+      return result;
+    } catch (e) {
+      const message = String(e && e.message ? e.message : e);
+      this.writeStatus_(startedAt, 'callibri_retry_until_success_today', 'ERROR_WILL_RETRY_IF_TODAY', message);
+      this.scheduleNextRetryIfToday_();
+      throw new Error(message);
+    }
+  },
+
+  installStableTriggers() {
+    this.deleteTriggersFor_([this.oldHardHandler, this.dailyHandler, this.recheckHandler]);
+
+    ScriptApp.newTrigger(this.dailyHandler)
+      .timeBased()
+      .everyDays(1)
+      .atHour(9)
+      .nearMinute(10)
+      .inTimezone(this.timezone)
+      .create();
+
+    const result = { ok: true, schedule: ['daily rolling-7-days 09:10 МСК'], disabledLegacyHandler: this.recheckHandler };
+    this.writeStatus_(new Date(), 'callibri_stable_triggers_install', 'INSTALL_OK', result);
+    return result;
+  },
+
+  installRetryTodayAfter2h() {
+    this.deleteTriggersFor_([this.retryHandler]);
+
+    ScriptApp.newTrigger(this.retryHandler)
+      .timeBased()
+      .after(2 * 60 * 60 * 1000)
+      .create();
+
+    const result = { ok: true, retry: 'after 2 hours, then every 2 hours today until success', handler: this.retryHandler };
+    this.writeStatus_(new Date(), 'callibri_retry_today_install', 'INSTALL_OK', result);
+    return result;
+  },
+
+  scheduleNextRetryIfToday_() {
+    if (!this.canRetryToday_()) return;
+    this.deleteTriggersFor_([this.retryHandler]);
+    ScriptApp.newTrigger(this.retryHandler)
+      .timeBased()
+      .after(2 * 60 * 60 * 1000)
+      .create();
+  },
+
+  canRetryToday_() {
+    const now = new Date();
+    const hour = Number(Utilities.formatDate(now, this.timezone, 'H'));
+    return hour < 22;
+  },
+
+  writeSelectedDates_(apiResults, apiDates) {
+    const ss = SpreadsheetApp.openById(this.spreadsheetId);
+    const dbSheet = ss.getSheetByName(TDM_DB_CALLIBRI_20260708.dbSheetName);
+    const checkSheet = ss.getSheetByName(TDM_DB_CALLIBRI_20260708.checkSheetName);
+
+    if (!dbSheet) throw new Error('Не найден лист ДБ.');
+    if (!checkSheet) throw new Error('Не найден лист Callibri_Сверка.');
+
+    const byDate = TDM_DB_CALLIBRI_20260708.aggregateFreshApiResults_(apiResults || []);
+    const result = [];
+
+    (apiDates || []).forEach(apiDate => {
+      const item = byDate[apiDate] || TDM_DB_CALLIBRI_20260708.emptyCallibriItem_();
+      TDM_DB_CALLIBRI_20260708.upsertCheckRow_(checkSheet, apiDate, item);
+      TDM_DB_CALLIBRI_20260708.writeDbDate_(dbSheet, apiDate, item);
+      result.push(apiDate + ': written Total=' + item.totalYandexCpc + ', Spam=' + item.spam + ', NonTarget=' + item.nonTarget + ', A=' + item.leadA + ', B=' + item.leadB + ', C=' + item.leadC + ', Unknown=' + item.unknownClass);
+    });
+
+    return result;
+  },
+
+  deleteTriggersFor_(handlers) {
+    const allowed = handlers || [];
+    ScriptApp.getProjectTriggers().forEach(trigger => {
+      if (allowed.indexOf(trigger.getHandlerFunction()) !== -1) {
+        ScriptApp.deleteTrigger(trigger);
+      }
+    });
+  },
+
+  yesterdayApi_() {
+    const date = new Date();
+    date.setDate(date.getDate() - 1);
+    return Utilities.formatDate(date, this.timezone, 'yyyy-MM-dd');
+  },
+
+  last3WorkdaysApi_() {
+    const result = [];
+    const cursor = new Date();
+    cursor.setDate(cursor.getDate() - 1);
+
+    while (result.length < 3) {
+      const day = cursor.getDay();
+      if (day !== 0 && day !== 6) {
+        result.push(Utilities.formatDate(cursor, this.timezone, 'yyyy-MM-dd'));
+      }
+      cursor.setDate(cursor.getDate() - 1);
     }
 
-    const apiDate = Utilities.formatDate(date, DB_VAG_V04_CONFIG.TIMEZONE, 'yyyy-MM-dd');
-    const direct = directByDate[apiDate] || { impressions: '', clicks: '', cost: '' };
-    const goals = goalsByDate[apiDate] || DB_VAG_V04_emptyGoals_();
-    const uis = uisByDate[apiDate] || DB_VAG_V04_emptyUisDailyRow_();
+    return result;
+  },
 
-    sheet.getRange(row, 3, 1, 2).setValues([[
-      DB_VAG_V04_blankZero_(direct.impressions),
-      DB_VAG_V04_blankZero_(direct.clicks)
-    ]]);
-    sheet.getRange(row, 6).setValue(DB_VAG_V04_blankZero_(direct.cost));
-    sheet.getRange(row, 9, 1, 9).setValues([[
-      DB_VAG_V04_blankZero_(goals.bb60sec2pages),
-      DB_VAG_V04_blankZero_(goals.phone8835),
-      DB_VAG_V04_blankZero_(goals.phone8865),
-      DB_VAG_V04_blankZero_(goals.max),
-      DB_VAG_V04_blankZero_(goals.telegramSlider),
-      DB_VAG_V04_blankZero_(goals.route),
-      DB_VAG_V04_blankZero_(uis.callsTotalFromUis),
-      DB_VAG_V04_blankZero_(uis.qualityCallsFromUis),
-      DB_VAG_V04_blankZero_(uis.leadsFromUis)
+  writeStatus_(startedAt, mode, status, payload) {
+    const ss = SpreadsheetApp.openById(this.spreadsheetId);
+    const sheet = ss.getSheetByName(this.workSheetName) || ss.insertSheet(this.workSheetName);
+    const now = new Date();
+    const details = typeof payload === 'string' ? payload : JSON.stringify(payload).slice(0, 45000);
+
+    sheet.getRange(Math.max(sheet.getLastRow() + 1, 6), 1, 1, 8).setValues([[
+      Utilities.formatDate(now, this.timezone, 'yyyy-MM-dd HH:mm:ss'),
+      mode,
+      status,
+      status.indexOf('OK') !== -1 || status === 'INSTALL_OK' ? 1 : 0,
+      status.indexOf('OK') !== -1 || status === 'INSTALL_OK' ? 0 : 1,
+      Utilities.formatDate(startedAt, this.timezone, 'yyyy-MM-dd HH:mm:ss'),
+      Math.round((now - startedAt) / 1000),
+      details
     ]]);
   }
+};
 
-  SpreadsheetApp.flush();
-  Logger.log('Готово: безопасно обновлены дневные значения ДБ за период ' + period.dateFrom + ' — ' + period.dateTo + '. Формулы, итоги, строка 234 и строки 242+ не тронуты.');
-}
+const TDM_REGION_AUTO_20260707 = {
+  spreadsheetId: '1zXDDfiRYHJE34iOJg-QfAC0bvoTKMIAuVMfsJS0z5Dg',
+  sheetName: 'Отчет  регионы',
+  timezone: 'Europe/Moscow',
 
-// =====================
-// ФОРМАТИРОВАНИЕ
-// =====================
+  updateCurrentMonthToYesterday() {
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    const dateFrom = Utilities.formatDate(new Date(yesterday.getFullYear(), yesterday.getMonth(), 1), this.timezone, 'yyyy-MM-dd');
+    const dateTo = Utilities.formatDate(yesterday, this.timezone, 'yyyy-MM-dd');
+    const rows = this.loadRows_(dateFrom, dateTo);
+    const byRegion = this.aggregate_(rows);
+    this.write_(dateFrom, dateTo, byRegion);
+  },
 
-function DB_VAG_V04_applyFormatting_(sheet, topRow, headerRow, dataStartRow, totalRow, template, year, month) {
-  const width = DB_VAG_V04_CONFIG.TABLE_WIDTH;
-  const startCol = DB_VAG_V04_CONFIG.START_COLUMN;
-  const daysRows = totalRow - dataStartRow;
-  const serviceRows = template.afterTotalRows;
-  const rowsCount = totalRow - topRow + 1 + serviceRows;
+  loadRows_(dateFrom, dateTo) {
+    const goals = ['453453800', '504318736', '504318735', '575188424'];
+    const body = {
+      params: {
+        SelectionCriteria: { DateFrom: dateFrom, DateTo: dateTo },
+        Goals: goals.map(Number),
+        AttributionModels: ['AUTO'],
+        FieldNames: ['CampaignName', 'Impressions', 'Clicks', 'Cost', 'Conversions'],
+        ReportName: 'tdm_region_auto_' + dateFrom + '_' + dateTo + '_' + Utilities.getUuid(),
+        ReportType: 'CAMPAIGN_PERFORMANCE_REPORT',
+        DateRangeType: 'CUSTOM_DATE',
+        Format: 'TSV',
+        IncludeVAT: 'YES',
+        IncludeDiscount: 'NO'
+      }
+    };
+    const text = TDM_DB.requestDirectReport_(body);
+    return this.parseTsv_(text, goals);
+  },
 
-  // Сохраняем формат майского шаблона, но проставляем нужные форматы чисел и дат.
-  sheet.getRange(topRow, startCol, rowsCount, width)
-    .setVerticalAlignment('middle')
-    .setBorder(true, true, true, true, true, true, '#000000', SpreadsheetApp.BorderStyle.SOLID);
+  parseTsv_(text, goals) {
+    const lines = String(text || '').trim().split(/\r?\n/).filter(Boolean);
+    const headerIndex = lines.findIndex(line => line.indexOf('CampaignName') !== -1 && line.indexOf('Cost') !== -1);
+    if (headerIndex === -1) throw new Error('Региональный отчёт: не найдены заголовки Direct TSV.');
+    const headers = lines[headerIndex].split('\t').map(h => String(h).replace(/^\uFEFF/, '').trim());
+    const idx = name => headers.indexOf(name);
+    const goalIdx = {};
+    goals.forEach(goal => {
+      goalIdx[goal] = headers.findIndex(h => String(h).indexOf('Conversions_' + goal + '_') === 0 || String(h).indexOf(goal) !== -1);
+    });
+    const rows = [];
+    for (let i = headerIndex + 1; i < lines.length; i++) {
+      const cols = lines[i].split('\t');
+      if (!cols[idx('CampaignName')]) continue;
+      rows.push({
+        campaign: cols[idx('CampaignName')],
+        impressions: TDM_DB.toNumber_(cols[idx('Impressions')]),
+        clicks: TDM_DB.toNumber_(cols[idx('Clicks')]),
+        cost: TDM_DB.toNumber_(cols[idx('Cost')]),
+        view3: this.goal_(cols, goalIdx['453453800']),
+        addToCart: this.goal_(cols, goalIdx['504318736']),
+        purchase: this.goal_(cols, goalIdx['504318735']),
+        jivo: this.goal_(cols, goalIdx['575188424'])
+      });
+    }
+    return rows;
+  },
 
-  sheet.getRange(headerRow, startCol, 1, width)
-    .setFontWeight('bold')
-    .setWrap(true)
-    .setHorizontalAlignment('center')
-    .setVerticalAlignment('middle');
+  goal_(cols, index) {
+    return index === -1 || index === undefined ? 0 : TDM_DB.toNumber_(cols[index]);
+  },
 
-  sheet.getRange(totalRow, startCol, 1, width)
-    .setFontWeight('bold');
+  aggregate_(rows) {
+    const result = {};
+    rows.forEach(row => {
+      const region = this.region_(row.campaign);
+      if (!result[region]) result[region] = { impressions: 0, clicks: 0, cost: 0, view3: 0, leads: 0 };
+      result[region].impressions += row.impressions;
+      result[region].clicks += row.clicks;
+      result[region].cost += row.cost;
+      result[region].view3 += row.view3;
+      result[region].leads += row.addToCart + row.purchase + row.jivo;
+    });
+    return result;
+  },
 
-  sheet.getRange(dataStartRow, 2, daysRows, 1).setNumberFormat('dd.mm.yyyy');
-  sheet.getRange(dataStartRow, 3, daysRows + 1, 2).setNumberFormat('#,##0');
-  sheet.getRange(dataStartRow, 5, daysRows + 1, 2).setNumberFormat('#,##0.00');
-  sheet.getRange(dataStartRow, 7, daysRows + 1, 1).setNumberFormat('0.00%');
-  sheet.getRange(dataStartRow, 8, daysRows + 1, 1).setNumberFormat('#,##0.00');
-  sheet.getRange(dataStartRow, 9, daysRows + 1, 10).setNumberFormat('#,##0');
-  sheet.getRange(dataStartRow, 19, daysRows + 1, 1).setNumberFormat('0.00%');
-  sheet.getRange(dataStartRow, 20, daysRows + 1, 1).setNumberFormat('#,##0.00');
+  region_(campaignName) {
+    const name = TDM_DB.normalize_(campaignName);
+    if (name.indexOf('spb-rf') !== -1 || name.indexOf('rf_spb') !== -1 || name.indexOf('rf-spb') !== -1) return 'СПБ+РФ';
+    if (name.indexOf('_kz') !== -1 || name.indexOf('-kz') !== -1 || name.indexOf(' kz') !== -1) return 'Казахстан';
+    if (name.indexOf('_spb') !== -1 || name.indexOf('-spb') !== -1 || name.indexOf(' spb') !== -1) return 'СПБ';
+    if (name.indexOf('_rf') !== -1 || name.indexOf('-rf') !== -1 || name.indexOf(' rf') !== -1) return 'РФ';
+    return 'Не определено';
+  },
 
-  sheet.getRange(topRow, startCol, rowsCount, width).setHorizontalAlignment('center');
-  sheet.getRange(topRow, startCol, rowsCount, 1).setHorizontalAlignment('left');
+  write_(dateFrom, dateTo, byRegion) {
+    const ss = SpreadsheetApp.openById(this.spreadsheetId);
+    const sheet = ss.getSheetByName(this.sheetName) || ss.insertSheet(this.sheetName);
+    const order = ['СПБ', 'РФ', 'Казахстан', 'СПБ+РФ', 'Не определено'];
+    const values = [];
+    values.push(['Отчёт по регионам из названия РК — ' + this.ruDate_(dateFrom) + '–' + this.ruDate_(dateTo), '', '', '', '', '', '', '', '', '', '', '', '', '']);
+    values.push(['Логика: регион берётся из названия кампании. Лиды = Ecommerce добавление в корзину + Ecommerce покупка + Jivo. Callibri отдельно не добавлен, пока API Callibri не проходит в ежедневном контуре.', '', '', '', '', '', '', '', '', '', '', '', '', '']);
+    values.push(['', '', '', '', '', '', '', '', '', '', '', '', '', '']);
+    values.push(['Регион', 'Показы', 'Клики', 'CTR', 'Расход, ₽', 'Просмотр 3х страниц', 'Отказы', 'Глубина', 'Лиды без Callibri', 'Доля лидов', 'CR по лидам', 'CPA по лидам', 'Оценка', 'Комментарий']);
+    const total = { impressions: 0, clicks: 0, cost: 0, view3: 0, leads: 0 };
+    order.forEach(region => {
+      const item = byRegion[region];
+      if (!item) return;
+      total.impressions += item.impressions;
+      total.clicks += item.clicks;
+      total.cost += item.cost;
+      total.view3 += item.view3;
+      total.leads += item.leads;
+    });
+    order.forEach(region => {
+      const item = byRegion[region];
+      if (!item) return;
+      values.push([region, item.impressions, item.clicks, this.pct_(item.clicks, item.impressions), item.cost, item.view3, '', '', item.leads, this.pct_(item.leads, total.leads), this.pct_(item.leads, item.clicks), item.leads ? item.cost / item.leads : 0, item.leads ? 'Контроль' : 'Нет лидов', region + ': ' + item.leads + ' лидов без Callibri, расход ' + Math.round(item.cost) + ' ₽. Callibri-классы подключить отдельно.']);
+    });
+    values.push(['Итого', total.impressions, total.clicks, this.pct_(total.clicks, total.impressions), total.cost, total.view3, '', '', total.leads, '100,00%', this.pct_(total.leads, total.clicks), total.leads ? total.cost / total.leads : 0, '', 'Итого без Callibri за период ' + this.ruDate_(dateFrom) + '–' + this.ruDate_(dateTo) + '.']);
+    sheet.getRange(1, 1, Math.max(sheet.getMaxRows(), 30), 14).breakApart();
+    sheet.clearContents();
+    sheet.getRange(1, 1, values.length, 14).setValues(values);
+    sheet.getRange(4, 1, 1, 14).setFontWeight('bold');
+    sheet.autoResizeColumns(1, 14);
+  },
 
-  // Чёрные контуры как в майском блоке: верхний блок, таблица, ИТОГО и служебные строки.
-  sheet.getRange(topRow, startCol, rowsCount, width)
-    .setBorder(true, true, true, true, true, true, '#000000', SpreadsheetApp.BorderStyle.SOLID);
+  pct_(a, b) {
+    return b ? Utilities.formatString('%.2f%%', (a / b) * 100).replace('.', ',') : '0,00%';
+  },
 
-  // Ширины колонок подтягиваем из майского блока, чтобы июнь выглядел так же.
-  for (let col = startCol; col < startCol + width; col++) {
-    sheet.setColumnWidth(col, sheet.getColumnWidth(col));
+  ruDate_(apiDate) {
+    return Utilities.formatDate(TDM_DB.parseApiDate_(apiDate), this.timezone, 'dd.MM.yyyy');
   }
-
-  // Рабочие дни белые, выходные серые — как в обычном ДБ-блоке.
-  for (let i = 0; i < daysRows; i++) {
-    const row = dataStartRow + i;
-    const date = new Date(year, month - 1, i + 1);
-    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-    sheet.getRange(row, startCol, 1, width).setBackground(isWeekend ? '#f3f3f3' : '#ffffff');
-  }
-
-  // Шапка и ИТОГО остаются с форматами из мая; дополнительно фиксируем читаемость.
-  sheet.getRange(headerRow, startCol, 1, width).setWrap(true);
-  sheet.getRange(totalRow, startCol, 1, width).setFontWeight('bold');
-}
-
-
-// =====================
-// УТИЛИТЫ
-// =====================
-
-function DB_VAG_V04_getMonthLabel_(year, month) {
-  const names = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
-  return names[month - 1] + ' ' + year;
-}
-
-function DB_VAG_V04_getDaysInMonth_(year, month) {
-  return new Date(year, month, 0).getDate();
-}
-
-function DB_VAG_V04_getDaysBetween_(dateFrom, dateTo) {
-  const start = DB_VAG_V04_parseApiDate_(dateFrom);
-  const end = DB_VAG_V04_parseApiDate_(dateTo);
-  return Math.round((end - start) / (24 * 60 * 60 * 1000)) + 1;
-}
-
-function DB_VAG_V04_formatDateRuFull_(apiDate) {
-  const parts = String(apiDate).split('-');
-  return parts[2] + '.' + parts[1] + '.' + parts[0];
-}
-
-function DB_VAG_V04_parseApiDate_(apiDate) {
-  const parts = String(apiDate).split('-').map(Number);
-  return new Date(parts[0], parts[1] - 1, parts[2]);
-}
-
-function DB_VAG_V04_toNumber_(value) {
-  if (value === null || value === undefined || value === '' || value === '-' || value === '--') return 0;
-  const text = String(value).replace(/\s/g, '').replace(',', '.').replace(/[^\d.-]/g, '');
-  const number = Number(text);
-  return isNaN(number) ? 0 : number;
-}
-
-function DB_VAG_V04_blankZero_(value) {
-  const number = Number(value || 0);
-  return number > 0 ? number : '';
-}
-
-function DB_VAG_V04_normalize_(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/ё/g, 'е')
-    .replace(/[«»"']/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function DB_VAG_V04_columnToLetter_(column) {
-  let temp = '';
-  let letter = '';
-
-  while (column > 0) {
-    temp = (column - 1) % 26;
-    letter = String.fromCharCode(temp + 65) + letter;
-    column = (column - temp - 1) / 26;
-  }
-
-  return letter;
-}
-
-function DB_VAG_V04_toQueryString_(params) {
-  return Object.keys(params)
-    .map(key => encodeURIComponent(key) + '=' + encodeURIComponent(params[key]))
-    .join('&');
-}
-// =====================
-// ЕЖЕДНЕВНЫЙ АВТОЗАПУСК ДБ В 8:00
-// Добавь этот блок в конец выбранного скрипта DB v04_1.
-//
-// Что запускать:
-// 1) createDbDaily8amTrigger_v4() — один раз создать ежедневный автозапуск.
-// 2) deleteDbDaily8amTriggers_v4() — удалить старый автозапуск, если понадобится.
-// 3) fillDbYesterdayDaily_v4() — ручной запуск обновления текущего месяца по вчерашний день.
-// =====================
-
-function fillDbYesterdayDaily_v4() {
-  // Безопасно обновляет текущий месяц с 1 числа по вчерашний день.
-  // Не очищает блок, не трогает формулы, итоги, строку 234 и строки 242+.
-  DB_VAG_V04_updateCurrentMonthDailySafe_();
-}
-
-function createDbDaily8amTrigger_v4() {
-  deleteDbDaily8amTriggers_v4();
-
-  ScriptApp.newTrigger('fillDbYesterdayDaily_v4')
-    .timeBased()
-    .everyDays(1)
-    .atHour(8)
-    .create();
-
-  Logger.log('Готово: ежедневный автозапуск ДБ создан. Отчёт будет обновляться каждый день около 08:00 по текущему месяцу до вчерашнего дня.');
-}
-
-function deleteDbDaily8amTriggers_v4() {
-  const handlers = [
-    'fillDbYesterdayDaily_v4',
-    'createDbCurrentMonthFromMayTemplate_v4'
-  ];
-
-  ScriptApp.getProjectTriggers()
-    .filter(trigger => handlers.indexOf(trigger.getHandlerFunction()) !== -1)
-    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
-
-  Logger.log('Готово: старые ежедневные триггеры ДБ удалены.');
-}
+};

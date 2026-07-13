@@ -65,18 +65,14 @@ const TDM_REPORTS_CONFIG = {
     threePages: ['просмотр 3', 'просмотр трех', '3 страницы', '3х страниц'],
     phoneClick: ['телефон', 'номер телефона', 'клик по номеру'],
     emailClick: ['email', 'e-mail', 'почт'],
-    talkMe: ['talkme', 'чат', 'клиент написал'],
     ecommercePurchase: ['ecommerce', 'покуп', 'заказ'],
-    ecommerceCart: ['ecommerce', 'корзин'],
-    roistatLead: ['roistat', 'заяв'],
-    roistatCall: ['roistat', 'звон']
+    ecommerceCart: ['ecommerce', 'корзин']
   },
-  regionsGoalKeys: ['threePages', 'emailClick', 'phoneClick', 'talkMe', 'ecommerceCart'],
+  regionsGoalKeys: ['threePages', 'emailClick', 'phoneClick', 'ecommerceCart'],
   goalLabels: {
     threePages: 'Просмотр 3х страниц',
     emailClick: 'Клик: По email адресу',
     phoneClick: 'Клик: По номеру телефона',
-    talkMe: 'TalkMe: Клиент написал в чат (онлайн)',
     ecommerceCart: 'Ecommerce: добавление в корзину'
   }
 };
@@ -117,14 +113,23 @@ function updateRegionsCitiesReport() {
   prepareRegionsCitiesSheet_(sheet, ss);
 
   const counterId = getCounterIdFromSheet_(sheet);
-  const period = {
-    date1: '2026-04-01',
-    date2: getCurrentAvailableDate_()
-  };
+  const now = new Date();
+  const tz = Session.getScriptTimeZone();
+  let period;
+  if (Utilities.formatDate(now, tz, 'yyyy-MM-dd') <= '2026-07-12') {
+    period = { date1: '2026-07-01', date2: '2026-07-05' };
+  } else {
+    const lastSunday = new Date(now);
+    const day = lastSunday.getDay();
+    lastSunday.setDate(lastSunday.getDate() - (day === 0 ? 7 : day));
+    const monthStart = new Date(lastSunday.getFullYear(), lastSunday.getMonth(), 1);
+    period = { date1: formatDate_(monthStart), date2: formatDate_(lastSunday) };
+  }
   const rawGoals = getMetrikaGoals(counterId);
   const goals = mapGoalsByName(rawGoals);
   const goalReport = getGoalMappingReport_(goals);
   const regionsGoalReport = getSelectedRegionsGoalReport_(goals);
+  const directStats = fetchDirectRegionStats_(period.date1, period.date2);
   const inputItems = getRegionsCitiesInput_(ss, sheet);
   const errors = [];
 
@@ -162,6 +167,13 @@ function updateRegionsCitiesReport() {
         const depth = num_(m[4]);
         const duration = num_(m[5]);
         const cr = visits ? leads / visits : 0;
+        const ad = directStats[normalize_(month) + '|' + normalize_(region)] || directStats['|' + normalize_(region)] || {};
+        const impressions = num_(ad.impressions);
+        const clicks = num_(ad.clicks);
+        const cost = num_(ad.cost);
+        const ctr = impressions ? clicks / impressions : 0;
+        const cpc = clicks ? cost / clicks : 0;
+        const cpa = leads ? cost / leads : 0;
         const quality = buildTrafficQuality_({
           visits: visits,
           leads: leads,
@@ -185,14 +197,14 @@ function updateRegionsCitiesReport() {
           city,
           visits,
           users,
-          '',
-          '',
-          '',
-          '',
-          '',
+          impressions,
+          clicks,
+          ctr,
+          cost,
+          cpc,
           leads,
           cr,
-          '',
+          cpa,
           bounces,
           depth,
           secondsToTime_(duration),
@@ -935,6 +947,243 @@ function getSelectedRegionsGoalReport_(goals) {
   };
 }
 
+function tdmInspectWorkingDirectRequest_() {
+  return String(tdmEnoMayMonthlyV3DirectRequest_);
+}
+
+function tdmFetchRegionGoalBreakdown_(date1, date2) {
+  const token = PropertiesService.getScriptProperties().getProperty('METRIKA_TOKEN');
+  if (!token) throw new Error('Не найден METRIKA_TOKEN');
+
+  const auth = { Authorization: 'OAuth ' + token };
+  const goalsUrl = 'https://api-metrika.yandex.net/management/v1/counter/92370926/goals';
+  const goalsResponse = UrlFetchApp.fetch(goalsUrl, { headers: auth, muteHttpExceptions: true });
+  if (goalsResponse.getResponseCode() !== 200) throw new Error('Ошибка целей Метрики: ' + goalsResponse.getContentText().slice(0, 300));
+
+  const normalizeName = function(value) {
+    return String(value || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim();
+  };
+  const aliases = {
+    view3:['просмотр 3х страниц','просмотр 3 страниц'],
+    spam:['callibri спам','спам'],
+    unqualified:['callibri нецелевой лид','нецелевой лид'],
+    addToCart:['ecommerce добавление в корзину','добавление в корзину'],
+    purchase:['ecommerce покупка','покупка'],
+    jivo:['jivo чат'],
+    qualA:['callibri лид квал a','лид квал a'],
+    qualC:['callibri лид квал c','лид квал c']
+  };
+
+  const goals = JSON.parse(goalsResponse.getContentText()).goals || [];
+  const ids = {};
+  Object.keys(aliases).forEach(function(key) {
+    const goal = goals.find(function(item) {
+      const name = normalizeName(item.name);
+      return aliases[key].some(function(alias) { return name === normalizeName(alias); });
+    });
+    if (goal) ids[key] = goal.id;
+  });
+
+  const keys = Object.keys(ids);
+  if (!keys.length) return {};
+  const metrics = keys.map(function(key) { return 'ym:s:goal' + ids[key] + 'reaches'; });
+  const reportUrl = 'https://api-metrika.yandex.net/stat/v1/data?' + [
+    'ids=92370926','date1=' + date1,'date2=' + date2,
+    'dimensions=ym:s:regionArea','metrics=' + encodeURIComponent(metrics.join(',')),
+    'accuracy=full','limit=10000'
+  ].join('&');
+
+  const reportResponse = UrlFetchApp.fetch(reportUrl, { headers: auth, muteHttpExceptions: true });
+  if (reportResponse.getResponseCode() !== 200) throw new Error('Ошибка региональных целей: ' + reportResponse.getContentText().slice(0, 300));
+
+  const result = {};
+  (JSON.parse(reportResponse.getContentText()).data || []).forEach(function(row) {
+    const region = String(row.dimensions && row.dimensions[0] && row.dimensions[0].name || '').trim();
+    if (!region) return;
+    result[region] = {};
+    keys.forEach(function(key, index) { result[region][key] = Number(row.metrics[index]) || 0; });
+  });
+  return result;
+}
+
+function tdmDiagnoseDirectGoalsByRegion() {
+  const body = {
+    params: {
+      SelectionCriteria: { DateFrom: '2026-07-01', DateTo: '2026-07-05' },
+      FieldNames: ['LocationOfPresenceName', 'Goals'],
+      ReportName: 'TDM region goals ' + Date.now(),
+      ReportType: 'CUSTOM_REPORT',
+      DateRangeType: 'CUSTOM_DATE',
+      Format: 'TSV',
+      IncludeVAT: 'YES',
+      IncludeDiscount: 'NO'
+    }
+  };
+  const text = tdmEnoMayMonthlyV3DirectRequest_(body);
+  const totals = {};
+  const regions = {};
+  String(text || '').split(/\r?\n/).filter(Boolean).forEach(function(line) {
+    const parts = line.split('\t');
+    if (parts.length < 2) return;
+    const region = String(parts[0] || '').trim();
+    const goals = String(parts[1] || '').trim();
+    if (!region || !goals || goals === '--') return;
+    if (!regions[region]) regions[region] = {};
+    goals.split(/[;,]/).forEach(function(pair) {
+      const match = String(pair).trim().match(/(\d+)\s*[:=]\s*([\d.,]+)/);
+      if (!match) return;
+      const id = match[1];
+      const value = Number(match[2].replace(',', '.')) || 0;
+      totals[id] = (totals[id] || 0) + value;
+      regions[region][id] = (regions[region][id] || 0) + value;
+    });
+  });
+  return { totals: totals, regions: regions };
+}
+
+function tdmDiagnoseOtherRegionsSpend() {
+  return tdmDiagnoseOtherRegionsSpend_();
+}
+
+function tdmDiagnoseOtherRegionsSpend_() {
+  const ss = SpreadsheetApp.openById(TDM_REPORTS_CONFIG.spreadsheetId);
+  const settings = ss.getSheetByName('Настройки_Регионы');
+  if (!settings) throw new Error('Не найден лист Настройки_Регионы');
+
+  const selected = {};
+  settings.getRange(3, 1, Math.max(settings.getLastRow() - 2, 1), 3).getValues()
+    .filter(function(row) {
+      return String(row[0]).trim() && normalize_(row[2]) === 'да';
+    })
+    .forEach(function(row) {
+      selected[directRegionKey_(row[0])] = true;
+    });
+
+  const stats = fetchDirectRegionStats_('2026-07-01', '2026-07-05');
+  const result = [];
+  Object.keys(stats).forEach(function(key) {
+    if (key.charAt(0) !== '|') return;
+    const regionKey = key.slice(1);
+    if (!regionKey || selected[regionKey]) return;
+    const item = stats[key] || {};
+    const cost = num_(item.cost);
+    if (cost <= 0) return;
+    result.push({
+      region: regionKey,
+      impressions: num_(item.impressions),
+      clicks: num_(item.clicks),
+      cost: cost
+    });
+  });
+
+  result.sort(function(a, b) { return b.cost - a.cost; });
+  return {
+    period: '2026-07-01 — 2026-07-05',
+    totalOtherCost: result.reduce(function(sum, row) { return sum + row.cost; }, 0),
+    regions: result
+  };
+}
+
+function fetchDirectRegionStats_(date1, date2) {
+  // Авторизация выполняется штатным Direct-запросом проекта.
+
+  const body = {
+    params: {
+      SelectionCriteria: { DateFrom: date1, DateTo: date2 },
+      FieldNames: ['Date', 'LocationOfPresenceName', 'Impressions', 'Clicks', 'Cost'],
+      ReportName: 'TDM regions ' + Date.now(),
+      ReportType: 'CUSTOM_REPORT',
+      DateRangeType: 'CUSTOM_DATE',
+      Format: 'TSV',
+      IncludeVAT: 'YES',
+      IncludeDiscount: 'NO'
+    }
+  };
+
+  const text = tdmEnoMayMonthlyV3DirectRequest_(body);
+
+  const result = {};
+  text.split(/\r?\n/).filter(Boolean).forEach(function(line) {
+    const p = line.split('\t');
+    if (p.length < 5) return;
+    const month = String(p[0]).slice(0, 7) + '-01';
+    const region = directRegionKey_(p[1]);
+    const impressions = num_(String(p[2]).replace(/\s/g, ''));
+    const clicks = num_(String(p[3]).replace(/\s/g, ''));
+    const cost = num_(String(p[4]).replace(/\s/g, '').replace(',', '.'));
+    const keys = [normalize_(month) + '|' + region, '|' + region];
+    keys.forEach(function(key) {
+      if (!result[key]) result[key] = { impressions: 0, clicks: 0, cost: 0 };
+      result[key].impressions += impressions;
+      result[key].clicks += clicks;
+      result[key].cost += cost;
+    });
+  });
+  return result;
+}
+
+function directRegionKey_(value) {
+  const key = normalize_(value);
+  const aliases = {
+    'москва':'москва и московская область','московская область':'москва и московская область',
+    'санкт-петербург':'санкт-петербург и ленинградская область','ленинградская область':'санкт-петербург и ленинградская область',
+    'архангельск':'архангельская область','воронеж':'воронежская область','великий новгород':'новгородская область',
+    'екатеринбург':'свердловская область','вологда':'вологодская область','казань':'республика татарстан',
+    'краснодар':'краснодарский край','калининград':'калининградская область','красноярск':'красноярский край',
+    'мурманск':'мурманская область','петрозаводск':'республика карелия','нижний новгород':'нижегородская область',
+    'псков':'псковская область','новосибирск':'новосибирская область','омск':'омская область',
+    'сыктывкар':'республика коми','пермь':'пермский край','самара':'самарская область',
+    'тюмень':'тюменская область','уфа':'республика башкортостан','челябинск':'челябинская область'
+  };
+  return normalize_(aliases[key] || key);
+}
+
+function getRegionsMondayPeriod_() {
+  const now = new Date();
+  const tz = Session.getScriptTimeZone();
+
+  // Первый ручной запуск по согласованному периоду.
+  if (Utilities.formatDate(now, tz, 'yyyy-MM-dd') <= '2026-07-12') {
+    return { date1: '2026-07-01', date2: '2026-07-05' };
+  }
+
+  const lastSunday = new Date(now);
+  const day = lastSunday.getDay();
+  lastSunday.setDate(lastSunday.getDate() - (day === 0 ? 7 : day));
+
+  const monthStart = new Date(lastSunday.getFullYear(), lastSunday.getMonth(), 1);
+  return {
+    date1: formatDate_(monthStart),
+    date2: formatDate_(lastSunday)
+  };
+}
+
+function createTdmRegionsMondayTrigger() {
+  const handler = 'tdmUpdateRegionsCitiesReport';
+  ScriptApp.getProjectTriggers()
+    .filter(function(trigger) { return trigger.getHandlerFunction() === handler; })
+    .forEach(function(trigger) { ScriptApp.deleteTrigger(trigger); });
+
+  ScriptApp.newTrigger(handler)
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY)
+    .atHour(10)
+    .create();
+}
+
+function getRegionsMondayPeriod_() {
+  const now = new Date();
+  const tz = Session.getScriptTimeZone();
+  if (Utilities.formatDate(now, tz, 'yyyy-MM-dd') <= '2026-07-12') {
+    return { date1: '2026-07-01', date2: '2026-07-05' };
+  }
+  const lastSunday = new Date(now);
+  const day = lastSunday.getDay();
+  lastSunday.setDate(lastSunday.getDate() - (day === 0 ? 7 : day));
+  const monthStart = new Date(lastSunday.getFullYear(), lastSunday.getMonth(), 1);
+  return { date1: formatDate_(monthStart), date2: formatDate_(lastSunday) };
+}
+
 function getCurrentAvailableDate_() {
   const date = new Date();
   date.setDate(date.getDate() - 1);
@@ -1275,10 +1524,7 @@ function buildProductMetrics_(goals) {
     sumGoalMetrics_([
       goals.phoneClick,
       goals.emailClick,
-      goals.talkMe,
-      goals.ecommercePurchase,
-      goals.roistatLead,
-      goals.roistatCall
+      goals.ecommercePurchase
     ]),
     'ym:s:bounceRate',
     'ym:s:pageDepth',

@@ -1,17 +1,16 @@
 // ==========================================================
-// ТДМ — месячный отчёт ЕНО/ЕМО за май 2026 v8 — формулы ИТОГО до конца + подсветка
+// ТДМ — месячный отчёт ЕНО/ЕМО
 //
 // Что делает:
-// 1) Берёт апрельский месячный блок как шаблон.
-// 2) Создаёт такой же блок за май.
+// 1) Берёт предыдущий месячный блок как шаблон.
+// 2) Создаёт блок за прошлый полный месяц.
 // 3) Автоматически тянет данные из Яндекс Директа.
-// 4) Заполняет таблицу РК как в апреле.
-// 5) Сохраняет формулы и форматирование из апрельского блока. Формулы НЕ очищает и НЕ перезаписывает.
+// 4) Заполняет таблицу РК по актуальной схеме целей.
+// 5) Сохраняет формулы и форматирование. Формулы НЕ очищает и НЕ перезаписывает.
 // 6) Добавляет клиентские комментарии ниже таблицы.
-// 7) В итог лидов считает только:
-//    Ecommerce: покупка + Talk me + Roistat Email + Roistat звонки.
-// 8) Roistat Email и Roistat звонки берёт только до 20.05,
-//    чтобы не смешивать полный май с частичными данными Roistat.
+// 7) В итог лидов считает только актуальные целевые действия:
+//    Ecommerce покупка + Jivo + Callibri Lead A + Callibri Lead C.
+// Старые внешние трекеры не используются в активной логике.
 // ==========================================================
 
 const TDM_ENO_MAY_MONTHLY_V3_CONFIG = {
@@ -26,8 +25,8 @@ const TDM_ENO_MAY_MONTHLY_V3_CONFIG = {
   DATE_FROM: '2026-05-01',
   DATE_TO: '2026-05-31',
 
-  // Roistat берём только до 20-го числа.
-  ROISTAT_CUTOFF_TO: '2026-05-20',
+  // Старые внешние цели больше не используем в активной логике.
+  LEGACY_CUTOFF_TO: '2026-05-20',
 
   // Если план нужен в комментарии — укажи сумму.
   // Если 0, будет только фактический расход.
@@ -77,36 +76,30 @@ const TDM_ENO_MAY_MONTHLY_V3_CONFIG = {
   ],
 
   GOALS: {
-    view3Pages: ['453453800'],      // Просмотр 3х страниц
-    phoneClick: ['432293138'],      // Клик: По номеру телефона
-    emailClick: ['388393244'],      // Клик: По email адресу
-    talkMeOnline: ['432303787'],    // TalkMe: Клиент написал в чат онлайн
+    view3Pages: ['453453800'],      // Просмотр 3х страниц — микроцель
     addToCart: ['504318736'],       // Ecommerce: добавление в корзину
-
-    // Основные цели для итоговых лидов
-    purchase: ['504318735'],        // Ecommerce: покупка
-    talkMe: ['432309471'],          // Talk me
-    email: ['541674471'],           // Roistat Email
-    calls: ['512458209']            // Roistat звонки
+    purchase: ['504318735'],        // Ecommerce: покупка — факт
+    jivo: ['575188424'],            // Jivo-сайт: пользователь начал чат — факт
+    callibriSpam: [],               // Callibri: Спам — источник пока не подключён
+    callibriNonTarget: [],          // Callibri: Нецелевой_Лид — источник пока не подключён
+    callibriLeadA: [],              // Callibri: Лид_Квал_A — источник пока не подключён
+    callibriLeadC: []               // Callibri: Лид_Квал_C — источник пока не подключён
   },
 
-  FACT_LEAD_KEYS: ['purchase', 'talkMe', 'email', 'calls']
+  FACT_LEAD_KEYS: ['purchase', 'jivo', 'callibriLeadA', 'callibriLeadC']
 };
 
 // ==========================================================
 // ЗАПУСК
 // ==========================================================
 
-function fillTdmEnoMay2026MonthlyReport() {
-  tdmEnoMayMonthlyV3Fill_();
-}
+// REMOVED_20260708: ручной запуск майского отчёта удалён из runtime. Использовать fillTdmEnoPreviousFullMonthReport.
 
-// Можно добавить меню, если удобно.
 function addEnoEmoMenu_() {
   try {
     SpreadsheetApp.getUi()
       .createMenu('ЕНО / ЕМО')
-      .addItem('Сформировать май 2026', 'fillTdmEnoMay2026MonthlyReport')
+      .addItem('Сформировать прошлый полный месяц', 'fillTdmEnoPreviousFullMonthReport')
       .addToUi();
   } catch (e) {
     Logger.log(e);
@@ -137,10 +130,10 @@ function tdmEnoMayMonthlyV3Fill_() {
     block.totalRow - 1
   );
 
-  let rows = tdmEnoMayMonthlyV3LoadRowsWithRoistatCutoff_(
+  let rows = tdmEnoMayMonthlyV3LoadRowsCurrentGoals_(
     TDM_ENO_MAY_MONTHLY_V3_CONFIG.DATE_FROM,
     TDM_ENO_MAY_MONTHLY_V3_CONFIG.DATE_TO,
-    TDM_ENO_MAY_MONTHLY_V3_CONFIG.ROISTAT_CUTOFF_TO
+    TDM_ENO_MAY_MONTHLY_V3_CONFIG.LEGACY_CUTOFF_TO
   );
 
   rows = tdmEnoMayMonthlyV3ApplyTemplateMeta_(rows, templateMeta);
@@ -238,24 +231,11 @@ function tdmEnoMayMonthlyV3GetSheet_(ss) {
 // ЗАГРУЗКА ДАННЫХ ИЗ ДИРЕКТА
 // ==========================================================
 
-function tdmEnoMayMonthlyV3LoadRowsWithRoistatCutoff_(dateFrom, dateTo, roistatCutoffTo) {
+function tdmEnoMayMonthlyV3LoadRowsCurrentGoals_(dateFrom, dateTo, legacyCutoffTo) {
   const fullRows = tdmEnoMayMonthlyV3LoadCampaignRows_(dateFrom, dateTo);
-  const roistatRows = tdmEnoMayMonthlyV3LoadCampaignRows_(dateFrom, roistatCutoffTo);
 
-  const roistatMap = {};
-
-  roistatRows.forEach(row => {
-    roistatMap[tdmEnoMayMonthlyV3Normalize_(row.campaignName)] = row;
-  });
-
+  // Старые внешние цели больше не добираем отдельным срезом и не включаем в факт.
   fullRows.forEach(row => {
-    const key = tdmEnoMayMonthlyV3Normalize_(row.campaignName);
-    const roistatRow = roistatMap[key];
-
-    // Важно: Roistat Email и звонки берём только до 20.05.
-    row.goals.email = roistatRow ? Number(roistatRow.goals.email || 0) : 0;
-    row.goals.calls = roistatRow ? Number(roistatRow.goals.calls || 0) : 0;
-
     row.factLeads = tdmEnoMayMonthlyV3FactLeads_(row.goals);
   });
 
@@ -305,55 +285,98 @@ function tdmEnoMayMonthlyV3LoadCampaignRows_(dateFrom, dateTo) {
   return tdmEnoMayMonthlyV3ParseCampaignTsv_(text);
 }
 
-function tdmEnoMayMonthlyV3DirectRequest_(body) {
-  let token = PropertiesService.getScriptProperties().getProperty('YANDEX_TOKEN');
+function tdmEnoMayMonthlyV3SafeLog_(context, error) {
+  const message = error && error.message ? error.message : String(error || 'unknown error');
+  Logger.log('[EMO] ' + context + ': ' + message);
+  if (error && error.stack) Logger.log(error.stack);
+}
 
-  if (!token) {
-    throw new Error('Не найден YANDEX_TOKEN в Script Properties.');
-  }
-
-  token = String(token)
+function tdmEnoMayMonthlyV3NormalizeToken_(token) {
+  return String(token || '')
     .replace(/^OAuth\s+/i, '')
     .replace(/^Bearer\s+/i, '')
     .trim();
+}
 
-  const url = 'https://api.direct.yandex.com/json/v5/reports';
+function tdmEnoMayMonthlyV3FetchWithRetry_(url, options, config) {
+  config = config || {};
+  const maxAttempts = Number(config.maxAttempts || 8);
+  const sleepMs = Number(config.sleepMs || 4000);
+  const retryCodes = config.retryCodes || [201, 202, 429, 500, 502, 503, 504];
+  let lastError = null;
 
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(body),
-    headers: {
-      Authorization: 'Bearer ' + token,
-      'Client-Login': TDM_ENO_MAY_MONTHLY_V3_CONFIG.CLIENT_LOGIN,
-      'Accept-Language': 'ru',
-      processingMode: 'auto',
-      returnMoneyInMicros: 'false',
-      skipReportHeader: 'true',
-      skipColumnHeader: 'false',
-      skipReportSummary: 'true'
-    },
-    muteHttpExceptions: true
-  };
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      const code = response.getResponseCode();
+      const text = response.getContentText();
 
-  for (let attempt = 1; attempt <= 20; attempt++) {
-    const response = UrlFetchApp.fetch(url, options);
-    const code = response.getResponseCode();
-    const text = response.getContentText();
+      if (code === 200) {
+        return { code: code, text: text, response: response };
+      }
 
-    if (code === 200) {
-      return text;
+      if (retryCodes.indexOf(code) !== -1 && attempt < maxAttempts) {
+        Utilities.sleep(sleepMs);
+        continue;
+      }
+
+      throw new Error('HTTP ' + code + ': ' + String(text || '').slice(0, 1000));
+    } catch (e) {
+      lastError = e;
+      if (attempt < maxAttempts) {
+        Utilities.sleep(sleepMs);
+        continue;
+      }
     }
-
-    if (code === 201 || code === 202) {
-      Utilities.sleep(5000);
-      continue;
-    }
-
-    throw new Error('Ошибка Директа. Код: ' + code + '\n' + text);
   }
 
-  throw new Error('Отчёт Директа не успел сформироваться. Запусти ещё раз через пару минут.');
+  throw lastError || new Error('Fetch failed without response');
+}
+
+function tdmEnoMayMonthlyV3DirectRequest_(body) {
+  try {
+    const token = tdmEnoMayMonthlyV3NormalizeToken_(
+      PropertiesService.getScriptProperties().getProperty('YANDEX_TOKEN')
+    );
+
+    if (!token) {
+      throw new Error('Не найден YANDEX_TOKEN в Script Properties.');
+    }
+
+    if (!body || !body.params) {
+      throw new Error('Пустое тело запроса Директа.');
+    }
+
+    const url = 'https://api.direct.yandex.com/json/v5/reports';
+
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(body),
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Client-Login': TDM_ENO_MAY_MONTHLY_V3_CONFIG.CLIENT_LOGIN,
+        'Accept-Language': 'ru',
+        processingMode: 'auto',
+        returnMoneyInMicros: 'false',
+        skipReportHeader: 'true',
+        skipColumnHeader: 'false',
+        skipReportSummary: 'true'
+      },
+      muteHttpExceptions: true
+    };
+
+    const result = tdmEnoMayMonthlyV3FetchWithRetry_(url, options, {
+      maxAttempts: 8,
+      sleepMs: 4000,
+      retryCodes: [201, 202, 429, 500, 502, 503, 504]
+    });
+
+    return result.text;
+  } catch (e) {
+    tdmEnoMayMonthlyV3SafeLog_('tdmEnoMayMonthlyV3DirectRequest_', e);
+    throw e;
+  }
 }
 
 function tdmEnoMayMonthlyV3ParseCampaignTsv_(tsvText) {
@@ -405,14 +428,13 @@ function tdmEnoMayMonthlyV3ParseCampaignTsv_(tsvText) {
 
     const goals = {
       view3Pages: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.view3Pages),
-      phoneClick: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.phoneClick),
-      emailClick: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.emailClick),
-      talkMeOnline: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.talkMeOnline),
+      callibriSpam: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.callibriSpam),
+      callibriNonTarget: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.callibriNonTarget),
       addToCart: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.addToCart),
       purchase: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.purchase),
-      talkMe: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.talkMe),
-      email: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.email),
-      calls: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.calls)
+      jivo: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.jivo),
+      callibriLeadA: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.callibriLeadA),
+      callibriLeadC: tdmEnoMayMonthlyV3GoalSum_(row, goalIndexes, TDM_ENO_MAY_MONTHLY_V3_CONFIG.GOALS.callibriLeadC)
     };
 
     result.push({
@@ -765,14 +787,13 @@ function tdmEnoMayMonthlyV3UpdateTotalFormulasToEnd_(sheet, header, dataStartRow
     header.clicks,
     header.cost,
     header.view3Pages,
-    header.emailClick,
-    header.phoneClick,
-    header.talkMeOnline,
+    header.callibriSpam,
+    header.callibriNonTarget,
     header.addToCart,
     header.purchase,
-    header.talkMe,
-    header.email,
-    header.calls,
+    header.jivo,
+    header.callibriLeadA,
+    header.callibriLeadC,
     header.factLeads
   ].filter(col => col > 0);
 
@@ -916,19 +937,13 @@ function tdmEnoMayMonthlyV3HeaderMap_(sheet, headerRow) {
     view3Pages: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['просмотр 3х страниц']),
     cr3Pages: 0,
     cpa3Pages: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['cpa просмотр 3х страниц', 'cpa просмотр']),
-    emailClick: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['клик: по email адресу', 'клик по email адресу', 'клик: по email']),
-    phoneClick: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['клик: по номеру телефона', 'клик по номеру телефона']),
-    talkMeOnline: tdmEnoMayMonthlyV3FindContainsCol_(normalized, [
-  'talkme: клиент написал в чат (онлайн)',
-  'клиент написал в чат (онлайн)',
-  'клиент написал в чат'
-]),
+    callibriSpam: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['callibri: спам', 'callibri спам']),
+    callibriNonTarget: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['callibri: нецелевой_лид', 'callibri нецелевой лид', 'callibri нецелевой_лид']),
     addToCart: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['ecommerce: добавление в корзину', 'ecommerce добавление в корзину']),
     purchase: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['ecommerce: покупка', 'ecommerce покупка']),
-
-    talkMe: tdmEnoMayMonthlyV3FindCol_(normalized, ['talk me']),
-    email: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['roistat email']),
-    calls: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['roistat звонки', 'roistat calls']),
+    jivo: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['jivo-чат', 'jivo чат', 'jivo']),
+    callibriLeadA: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['callibri: лид_квал_a', 'callibri лид квал a', 'callibri лид_квал_a']),
+    callibriLeadC: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['callibri: лид_квал_c', 'callibri лид квал c', 'callibri лид_квал_c']),
 
     factLeads: tdmEnoMayMonthlyV3FindContainsCol_(normalized, ['факт сумма конверсий', 'факт конверсий', 'кол-во лид', 'лиды']),
     factCr: 0,
@@ -1053,6 +1068,8 @@ function tdmEnoMayMonthlyV3SortRowsByTemplate_(rows, meta) {
 // ==========================================================
 
 function tdmEnoMayMonthlyV3ClearDataValues_(sheet, header, startRow, rowsCount) {
+  if (!sheet || !header || !startRow || !rowsCount || rowsCount <= 0) return;
+
   const columns = [
     header.rk,
     header.type,
@@ -1069,39 +1086,91 @@ function tdmEnoMayMonthlyV3ClearDataValues_(sheet, header, startRow, rowsCount) 
     header.view3Pages,
     header.cr3Pages,
     header.cpa3Pages,
-    header.emailClick,
-    header.phoneClick,
-    header.talkMeOnline,
+    header.callibriSpam,
+    header.callibriNonTarget,
     header.addToCart,
     header.purchase,
-    header.talkMe,
-    header.email,
-    header.calls,
+    header.jivo,
+    header.callibriLeadA,
+    header.callibriLeadC,
     header.factLeads,
     header.factCr,
     header.cpaFact
-  ].filter(col => col > 0);
+  ].filter(col => col > 0)
+    .filter((col, index, arr) => arr.indexOf(col) === index)
+    .sort((a, b) => a - b);
 
   columns.forEach(col => {
-    for (let i = 0; i < rowsCount; i++) {
-      const cell = sheet.getRange(startRow + i, col);
+    const range = sheet.getRange(startRow, col, rowsCount, 1);
+    const formulas = range.getFormulas();
+    const values = range.getValues();
+    let changed = false;
 
-      if (!cell.getFormula()) {
-        cell.clearContent();
+    for (let i = 0; i < rowsCount; i++) {
+      if (!formulas[i][0] && values[i][0] !== '') {
+        values[i][0] = '';
+        changed = true;
       }
     }
+
+    if (changed) range.setValues(values);
   });
 }
 
 function tdmEnoMayMonthlyV3FillRows_(sheet, header, startRow, rows) {
+  if (!sheet || !header || !startRow) return;
+
   if (!rows.length) {
     tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, startRow, header.rk, 'Нет данных');
     return;
   }
 
-  rows.forEach((item, index) => {
-    const row = startRow + index;
+  const columns = [
+    header.rk,
+    header.type,
+    header.impressions,
+    header.clicks,
+    header.ctr,
+    header.cpc,
+    header.cost,
+    header.avgBid,
+    header.avgPosition,
+    header.avgTraffic,
+    header.bounce,
+    header.depth,
+    header.view3Pages,
+    header.cr3Pages,
+    header.cpa3Pages,
+    header.callibriSpam,
+    header.callibriNonTarget,
+    header.addToCart,
+    header.purchase,
+    header.jivo,
+    header.callibriLeadA,
+    header.callibriLeadC,
+    header.factLeads,
+    header.factCr,
+    header.cpaFact
+  ].filter(col => col > 0);
 
+  if (!columns.length) return;
+
+  const minCol = Math.min.apply(null, columns);
+  const maxCol = Math.max.apply(null, columns);
+  const width = maxCol - minCol + 1;
+  const range = sheet.getRange(startRow, minCol, rows.length, width);
+  const formulas = range.getFormulas();
+  const values = range.getValues();
+
+  const put = function(rowIndex, col, value) {
+    if (!col || col <= 0) return;
+    const offset = col - minCol;
+    if (offset < 0 || offset >= width) return;
+    if (formulas[rowIndex][offset]) return;
+    values[rowIndex][offset] = value;
+  };
+
+  rows.forEach((item, index) => {
     const ctr = item.impressions > 0 ? item.clicks / item.impressions : 0;
     const cpc = item.clicks > 0 ? item.cost / item.clicks : 0;
     const cr3 = item.clicks > 0 ? item.goals.view3Pages / item.clicks : 0;
@@ -1109,37 +1178,34 @@ function tdmEnoMayMonthlyV3FillRows_(sheet, header, startRow, rows) {
     const factCr = item.clicks > 0 ? item.factLeads / item.clicks : 0;
     const cpaFact = item.factLeads > 0 ? item.cost / item.factLeads : '';
 
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.rk, item.campaignName);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.type, item.campaignType);
-
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.impressions, item.impressions);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.clicks, item.clicks);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.ctr, ctr);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.cpc, cpc);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.cost, item.cost);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.avgBid, item.avgBid);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.avgPosition, item.avgPosition);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.avgTraffic, item.avgTraffic);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.bounce, item.bounce);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.depth, item.depth);
-
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.view3Pages, tdmEnoMayMonthlyV3GoalCell_(item.goals.view3Pages));
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.cr3Pages, cr3);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.cpa3Pages, cpa3);
-
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.emailClick, tdmEnoMayMonthlyV3GoalCell_(item.goals.emailClick));
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.phoneClick, tdmEnoMayMonthlyV3GoalCell_(item.goals.phoneClick));
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.talkMeOnline, tdmEnoMayMonthlyV3GoalCell_(item.goals.talkMeOnline));
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.addToCart, tdmEnoMayMonthlyV3GoalCell_(item.goals.addToCart));
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.purchase, tdmEnoMayMonthlyV3GoalCell_(item.goals.purchase));
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.talkMe, tdmEnoMayMonthlyV3GoalCell_(item.goals.talkMe));
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.email, tdmEnoMayMonthlyV3GoalCell_(item.goals.email));
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.calls, tdmEnoMayMonthlyV3GoalCell_(item.goals.calls));
-
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.factLeads, item.factLeads);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.factCr, factCr);
-    tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, row, header.cpaFact, cpaFact);
+    put(index, header.rk, item.campaignName);
+    put(index, header.type, item.campaignType);
+    put(index, header.impressions, item.impressions);
+    put(index, header.clicks, item.clicks);
+    put(index, header.ctr, ctr);
+    put(index, header.cpc, cpc);
+    put(index, header.cost, item.cost);
+    put(index, header.avgBid, item.avgBid);
+    put(index, header.avgPosition, item.avgPosition);
+    put(index, header.avgTraffic, item.avgTraffic);
+    put(index, header.bounce, item.bounce);
+    put(index, header.depth, item.depth);
+    put(index, header.view3Pages, tdmEnoMayMonthlyV3GoalCell_(item.goals.view3Pages));
+    put(index, header.cr3Pages, cr3);
+    put(index, header.cpa3Pages, cpa3);
+    put(index, header.callibriSpam, tdmEnoMayMonthlyV3GoalCell_(item.goals.callibriSpam));
+    put(index, header.callibriNonTarget, tdmEnoMayMonthlyV3GoalCell_(item.goals.callibriNonTarget));
+    put(index, header.addToCart, tdmEnoMayMonthlyV3GoalCell_(item.goals.addToCart));
+    put(index, header.purchase, tdmEnoMayMonthlyV3GoalCell_(item.goals.purchase));
+    put(index, header.jivo, tdmEnoMayMonthlyV3GoalCell_(item.goals.jivo));
+    put(index, header.callibriLeadA, tdmEnoMayMonthlyV3GoalCell_(item.goals.callibriLeadA));
+    put(index, header.callibriLeadC, tdmEnoMayMonthlyV3GoalCell_(item.goals.callibriLeadC));
+    put(index, header.factLeads, item.factLeads);
+    put(index, header.factCr, factCr);
+    put(index, header.cpaFact, cpaFact);
   });
+
+  range.setValues(values);
 }
 
 function tdmEnoMayMonthlyV3FillTotalRow_(sheet, header, totalRow, rows) {
@@ -1170,14 +1236,13 @@ function tdmEnoMayMonthlyV3FillTotalRow_(sheet, header, totalRow, rows) {
   tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.cr3Pages, cr3);
   tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.cpa3Pages, cpa3);
 
-  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.emailClick, total.goals.emailClick);
-  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.phoneClick, total.goals.phoneClick);
-  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.talkMeOnline, total.goals.talkMeOnline);
+  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.callibriSpam, total.goals.callibriSpam);
+  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.callibriNonTarget, total.goals.callibriNonTarget);
   tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.addToCart, total.goals.addToCart);
   tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.purchase, total.goals.purchase);
-  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.talkMe, total.goals.talkMe);
-  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.email, total.goals.email);
-  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.calls, total.goals.calls);
+  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.jivo, total.goals.jivo);
+  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.callibriLeadA, total.goals.callibriLeadA);
+  tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.callibriLeadC, total.goals.callibriLeadC);
 
   tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.factLeads, total.factLeads);
   tdmEnoMayMonthlyV3SetUnlessFormula_(sheet, totalRow, header.factCr, factCr);
@@ -1217,7 +1282,7 @@ function tdmEnoMayMonthlyV3SetTopSummary_(sheet, topRow, total) {
         sheet,
         topRow,
         index + 1,
-        'без учёта работы Roistat после 20-го числа'
+        'Callibri A/C пока без источника в коде'
       );
     }
   });
@@ -1263,17 +1328,14 @@ function tdmEnoMayMonthlyV3CampaignStrength_(item, avgCpa) {
   const clicks = Number(item.clicks || 0);
 
   const purchase = Number(item.goals.purchase || 0);
-  const talkMe = Number(item.goals.talkMe || 0);
-  const roistatEmail = Number(item.goals.email || 0);
-  const roistatCalls = Number(item.goals.calls || 0);
+  const jivo = Number(item.goals.jivo || 0);
+  const callibriLeadA = Number(item.goals.callibriLeadA || 0);
+  const callibriLeadC = Number(item.goals.callibriLeadC || 0);
 
-  const emailClick = Number(item.goals.emailClick || 0);
-  const phoneClick = Number(item.goals.phoneClick || 0);
-  const talkMeOnline = Number(item.goals.talkMeOnline || 0);
   const addToCart = Number(item.goals.addToCart || 0);
   const view3Pages = Number(item.goals.view3Pages || 0);
 
-  const microSignals = emailClick + phoneClick + talkMeOnline + addToCart + view3Pages;
+  const microSignals = addToCart + view3Pages;
   const cpa = factLeads > 0 ? cost / factLeads : 0;
 
   // Зелёный — сильные кампании:
@@ -1290,11 +1352,11 @@ function tdmEnoMayMonthlyV3CampaignStrength_(item, avgCpa) {
   // лид есть, но CPA выше среднего, либо есть микроцели/полезные сигналы.
   if (
     factLeads >= 1 ||
-    roistatEmail > 0 ||
-    roistatCalls > 0 ||
-    talkMe > 0 ||
+    jivo > 0 ||
+    callibriLeadA > 0 ||
+    callibriLeadC > 0 ||
     microSignals >= 3 ||
-    (clicks >= 30 && (talkMeOnline > 0 || addToCart > 0 || emailClick > 0 || phoneClick > 0))
+    (clicks >= 30 && addToCart > 0)
   ) {
     return 'medium';
   }
@@ -1338,8 +1400,6 @@ function tdmEnoMayMonthlyV3BuildComments_(rows) {
   const monthName = tdmEnoMayMonthlyV3MonthNameRu_(TDM_ENO_MAY_MONTHLY_V3_CONFIG.DATE_FROM);
 const dateFromShort = tdmEnoMayMonthlyV3ShortDate_(TDM_ENO_MAY_MONTHLY_V3_CONFIG.DATE_FROM);
 const dateToShort = tdmEnoMayMonthlyV3ShortDate_(TDM_ENO_MAY_MONTHLY_V3_CONFIG.DATE_TO);
-const roistatCutoffShort = tdmEnoMayMonthlyV3ShortDate_(TDM_ENO_MAY_MONTHLY_V3_CONFIG.ROISTAT_CUTOFF_TO);
-
 comments.push([
   'Комментарии к отчёту за ' +
   monthName +
@@ -1347,9 +1407,7 @@ comments.push([
   dateFromShort +
   ' по ' +
   dateToShort +
-  ' (без частичных данных по Roistat после ' +
-  roistatCutoffShort +
-  ')'
+  ' (новая схема целей: Ecommerce / Jivo / Callibri)'
 ]);
   comments.push(['']);
 
@@ -1364,10 +1422,14 @@ comments.push([
   comments.push(['']);
 
   comments.push(['Достигнуты цели:']);
+  comments.push(['Просмотр 3х страниц — ' + tdmEnoMayMonthlyV3Int_(total.goals.view3Pages)]);
+  comments.push(['Callibri: Спам — ' + tdmEnoMayMonthlyV3Int_(total.goals.callibriSpam)]);
+  comments.push(['Callibri: Нецелевой_Лид — ' + tdmEnoMayMonthlyV3Int_(total.goals.callibriNonTarget)]);
+  comments.push(['Ecommerce: добавление в корзину — ' + tdmEnoMayMonthlyV3Int_(total.goals.addToCart)]);
   comments.push(['Ecommerce: покупка — ' + tdmEnoMayMonthlyV3Int_(total.goals.purchase)]);
-  comments.push(['Talk me — ' + tdmEnoMayMonthlyV3Int_(total.goals.talkMe)]);
-  comments.push(['Roistat Email — ' + tdmEnoMayMonthlyV3Int_(total.goals.email)]);
-  comments.push(['Roistat звонки — ' + tdmEnoMayMonthlyV3Int_(total.goals.calls)]);
+  comments.push(['Jivo-чат — ' + tdmEnoMayMonthlyV3Int_(total.goals.jivo)]);
+  comments.push(['Callibri: Лид_Квал_A — ' + tdmEnoMayMonthlyV3Int_(total.goals.callibriLeadA)]);
+  comments.push(['Callibri: Лид_Квал_C — ' + tdmEnoMayMonthlyV3Int_(total.goals.callibriLeadC)]);
   comments.push([
     'Итого получено: ' +
     tdmEnoMayMonthlyV3Int_(total.factLeads) +
@@ -1413,9 +1475,9 @@ comments.push([
     comments.push(['Клики — ' + tdmEnoMayMonthlyV3Int_(kzTotal.clicks)]);
     comments.push(['Средний CPC — ' + tdmEnoMayMonthlyV3Rub_(kzTotal.clicks > 0 ? kzTotal.cost / kzTotal.clicks : 0)]);
     comments.push(['Ecommerce: покупка — ' + tdmEnoMayMonthlyV3Int_(kzTotal.goals.purchase)]);
-    comments.push(['Talk me — ' + tdmEnoMayMonthlyV3Int_(kzTotal.goals.talkMe)]);
-    comments.push(['Roistat Email — ' + tdmEnoMayMonthlyV3Int_(kzTotal.goals.email)]);
-    comments.push(['Roistat звонки — ' + tdmEnoMayMonthlyV3Int_(kzTotal.goals.calls)]);
+    comments.push(['Jivo-чат — ' + tdmEnoMayMonthlyV3Int_(kzTotal.goals.jivo)]);
+    comments.push(['Callibri: Лид_Квал_A — ' + tdmEnoMayMonthlyV3Int_(kzTotal.goals.callibriLeadA)]);
+    comments.push(['Callibri: Лид_Квал_C — ' + tdmEnoMayMonthlyV3Int_(kzTotal.goals.callibriLeadC)]);
     comments.push([
       'Итого получено: ' +
       tdmEnoMayMonthlyV3Int_(kzTotal.factLeads) +
@@ -1434,7 +1496,7 @@ comments.push([
 
   comments.push(['Фокус на следующий месяц:']);
   comments.push(['1. Удержать кампании, которые дают лиды с CPA ниже среднего.']);
-  comments.push(['2. Проверить кампании с расходом без покупок, Talk me, email и звонков.']);
+  comments.push(['2. Проверить кампании с расходом без покупок, Jivo и Callibri A/C.']);
   comments.push(['3. Почистить поисковые запросы и площадки в сетях.']);
   comments.push(['4. Отдельно проверить товарные кампании: оставить категории с обращениями и убрать слабый трафик.']);
 
@@ -1556,14 +1618,13 @@ function tdmEnoMayMonthlyV3EmptyTotals_() {
     cost: 0,
     goals: {
       view3Pages: 0,
-      phoneClick: 0,
-      emailClick: 0,
-      talkMeOnline: 0,
+      callibriSpam: 0,
+      callibriNonTarget: 0,
       addToCart: 0,
       purchase: 0,
-      talkMe: 0,
-      email: 0,
-      calls: 0
+      jivo: 0,
+      callibriLeadA: 0,
+      callibriLeadC: 0
     },
     factLeads: 0
   };
@@ -1807,21 +1868,25 @@ function checkTdmEnoMay2026MonthlyTotalsSafe() {
   let impressions = 0;
   let clicks = 0;
   let cost = 0;
-  let emailClick = 0;
-  let phoneClick = 0;
-  let talkMeOnline = 0;
+  let callibriSpam = 0;
+  let callibriNonTarget = 0;
   let purchase = 0;
   let addToCart = 0;
+  let jivo = 0;
+  let callibriLeadA = 0;
+  let callibriLeadC = 0;
 
   values.forEach(row => {
     impressions += header.impressions ? tdmEnoMayMonthlyV3ToNumber_(row[header.impressions - 1]) : 0;
     clicks += header.clicks ? tdmEnoMayMonthlyV3ToNumber_(row[header.clicks - 1]) : 0;
     cost += header.cost ? tdmEnoMayMonthlyV3ToNumber_(row[header.cost - 1]) : 0;
-    emailClick += header.emailClick ? tdmEnoMayMonthlyV3ToNumber_(row[header.emailClick - 1]) : 0;
-    phoneClick += header.phoneClick ? tdmEnoMayMonthlyV3ToNumber_(row[header.phoneClick - 1]) : 0;
-    talkMeOnline += header.talkMeOnline ? tdmEnoMayMonthlyV3ToNumber_(row[header.talkMeOnline - 1]) : 0;
+    callibriSpam += header.callibriSpam ? tdmEnoMayMonthlyV3ToNumber_(row[header.callibriSpam - 1]) : 0;
+    callibriNonTarget += header.callibriNonTarget ? tdmEnoMayMonthlyV3ToNumber_(row[header.callibriNonTarget - 1]) : 0;
     purchase += header.purchase ? tdmEnoMayMonthlyV3ToNumber_(row[header.purchase - 1]) : 0;
     addToCart += header.addToCart ? tdmEnoMayMonthlyV3ToNumber_(row[header.addToCart - 1]) : 0;
+    jivo += header.jivo ? tdmEnoMayMonthlyV3ToNumber_(row[header.jivo - 1]) : 0;
+    callibriLeadA += header.callibriLeadA ? tdmEnoMayMonthlyV3ToNumber_(row[header.callibriLeadA - 1]) : 0;
+    callibriLeadC += header.callibriLeadC ? tdmEnoMayMonthlyV3ToNumber_(row[header.callibriLeadC - 1]) : 0;
   });
 
   const message =
@@ -1830,11 +1895,13 @@ function checkTdmEnoMay2026MonthlyTotalsSafe() {
     'Клики: ' + tdmEnoMayMonthlyV3Int_(clicks) + '\\n' +
     'Расход: ' + tdmEnoMayMonthlyV3Rub_(cost) + '\\n' +
     'CPC: ' + tdmEnoMayMonthlyV3Rub_(clicks > 0 ? cost / clicks : 0) + '\\n' +
-    'Клик email: ' + tdmEnoMayMonthlyV3Int_(emailClick) + '\\n' +
-    'Клик телефон: ' + tdmEnoMayMonthlyV3Int_(phoneClick) + '\\n' +
-    'TalkMe онлайн: ' + tdmEnoMayMonthlyV3Int_(talkMeOnline) + '\\n' +
+    'Callibri Спам: ' + tdmEnoMayMonthlyV3Int_(callibriSpam) + '\\n' +
+    'Callibri Нецелевой: ' + tdmEnoMayMonthlyV3Int_(callibriNonTarget) + '\\n' +
     'Ecommerce покупка: ' + tdmEnoMayMonthlyV3Int_(purchase) + '\\n' +
-    'Ecommerce добавление в корзину: ' + tdmEnoMayMonthlyV3Int_(addToCart);
+    'Ecommerce добавление в корзину: ' + tdmEnoMayMonthlyV3Int_(addToCart) + '\\n' +
+    'Jivo: ' + tdmEnoMayMonthlyV3Int_(jivo) + '\\n' +
+    'Callibri A: ' + tdmEnoMayMonthlyV3Int_(callibriLeadA) + '\\n' +
+    'Callibri C: ' + tdmEnoMayMonthlyV3Int_(callibriLeadC);
 
   Logger.log(message);
   tdmEnoMayMonthlyV3Toast_(message);
@@ -1882,7 +1949,7 @@ function fillTdmEnoPreviousFullMonthReport() {
 
   TDM_ENO_MAY_MONTHLY_V3_CONFIG.DATE_FROM = period.dateFrom;
   TDM_ENO_MAY_MONTHLY_V3_CONFIG.DATE_TO = period.dateTo;
-  TDM_ENO_MAY_MONTHLY_V3_CONFIG.ROISTAT_CUTOFF_TO = period.roistatCutoffTo;
+  TDM_ENO_MAY_MONTHLY_V3_CONFIG.LEGACY_CUTOFF_TO = period.legacyCutoffTo;
 
   // Важно: для следующих месяцев уже не 93 строка,
   // а новый блок через одну пустую строку после прошлого.
@@ -1912,8 +1979,8 @@ function tdmEnoGetPreviousFullMonthPeriod_() {
     1
   );
 
-  // 20-е число прошлого месяца для Roistat
-  const roistatCutoff = new Date(
+  // 20-е число прошлого месяца оставлено как legacy-порог для совместимости.
+  const legacyCutoff = new Date(
     lastDayPreviousMonth.getFullYear(),
     lastDayPreviousMonth.getMonth(),
     20
@@ -1922,11 +1989,11 @@ function tdmEnoGetPreviousFullMonthPeriod_() {
   return {
     dateFrom: Utilities.formatDate(firstDayPreviousMonth, tz, 'yyyy-MM-dd'),
     dateTo: Utilities.formatDate(lastDayPreviousMonth, tz, 'yyyy-MM-dd'),
-    roistatCutoffTo: Utilities.formatDate(roistatCutoff, tz, 'yyyy-MM-dd')
+    legacyCutoffTo: Utilities.formatDate(legacyCutoff, tz, 'yyyy-MM-dd')
   };
 }
 
-function createTdmEnoMonthlyTrigger10am() {
+function archived_createTdmEnoMonthlyTrigger10am() {
   const triggers = ScriptApp.getProjectTriggers();
 
   triggers.forEach(trigger => {

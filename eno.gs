@@ -1,169 +1,335 @@
-// VAG-House ENO weekly report — one ready file v26
-// Вставь этот код целиком в Apps Script вместо текущего файла ЕНО.
-// Рабочая логика: отчёт всегда строится за предыдущую полную неделю
-// с понедельника по воскресенье и может обновляться каждый понедельник в 10:00.
-//
-// Что запускать:
-// 1) fillEnoPreviousFullWeekReport_v26() — вручную сформировать отчёт за предыдущую полную неделю ПН–ВС.
-// 2) fillEnoWeek_2026_06_01_2026_06_07_v26() — разово пересобрать нужный сейчас период 01.06–07.06.
-// 3) createEnoMonday10Trigger_v26() — один раз создать автозапуск каждый понедельник в 10:00.
-// 4) deleteEnoMonday10Triggers_v26() — удалить автозапуск ЕНО, если понадобится.
-// Обновлено v19: добавлены все цели M:U, включая маршрут 547214611.
-// Исправлено оформление комментария: старый хвост шаблона очищается, комментарий пишется отдельным блоком.
-// v20: исправлена ошибка объединения закрепленных и незакрепленных столбцов.
-// v21: комментарий пишется в колонку A; заголовки выделены жирным и цветной заливкой.
-// v22: цели M:U берутся из Метрики как "Достижения цели" (reaches), чтобы совпадать с отчетом Метрики.
-// v23: исправлен формат колонки K "Отказы (%)" — значение приводится к доле для процентного формата.
-// v24: Метрика берёт отдельный METRIKA_TOKEN, при 403 отчёт не падает, а оставляет цели из Директа и пишет предупреждение в комментарий.
-// v25: цели Метрики берутся через обычный namespace ym:s, без ym:ad/direct_client_logins. Достаточно доступа к счётчику.
-// v26: все внутренние имена и функции запуска имеют суффикс _v26, чтобы не конфликтовать со старым кодом в проекте.
-// KPI / Факт сумма конверсий считается только по T + U.
+/*
+============================================================
+ЕНО — ЧИСТЫЙ ЗАЩИЩЁННЫЙ КОД + ПРАВИЛА
+Версия: v20_geo_cpa + rules v1
+============================================================
 
-const VAG_ENO_V26_CONFIG = {
-  SHEET_NAME: 'ЕНО',
-  CLIENT_LOGIN: 'vag-house98',
-  TIMEZONE: 'Europe/Moscow',
-  ATTRIBUTION_MODEL: 'AUTO',
-  METRIKA_COUNTER_ID: '99052519',
-  METRIKA_ATTRIBUTION: 'automatic',
+ПРАВИЛА, КОТОРЫЕ НУЖНО ПОМНИТЬ ПРИ ЛЮБЫХ ПРАВКАХ ЕНО:
 
-  TEMPLATE_TOP_ROW: 624,
-  TEMPLATE_COPY_ROWS: 70,
-  MONTH_BUDGET: 120000,
+ЕНО — ПРАВИЛО, ЧТОБЫ БЛОК НЕ ПАДАЛ И НЕ МОЛЧАЛ
 
-  GOOD_CPA_LIMIT: 2500,
-  MIDDLE_CPA_LIMIT: 5000,
-  RED_COST_LIMIT: 3000,
-  YELLOW_COST_LIMIT: 1500,
-  YELLOW_CLICKS_LIMIT: 10,
+Версия: 1.1
 
-  GOALS: {
-    bb60sec2pages: '555861179',    // M — B-B_60сек+2стр
-    phone8835: '511787501',        // N — Клик на 79110008835
-    phone8865: '511788019',        // O — Клик на 79110008865
-    max: '511788150',              // P — Клик на Макс
-    telegramSlider: '511791937',   // Q — Успешно пройден слайдер для перехода в TG
-    route: '547214611',            // R — Клик по кнопке "Маршрут"
-    uisCalls: '517626340',         // S — Звонки Юис
-    uisUniqueCalls: '562354501',   // T — Звонки_Уник - ЮИС
-    uisLeads: '517626592'          // U — Заявки Юис
+Актуальная схема v21:
+- старые внешние цели не используются в активной логике;
+- отчёт заполняется по Метрике AUTO, Ecommerce, Jivo и Callibri после подключения;
+- лишние legacy-колонки из старых шаблонов не должны попадать в расчёт фактических лидов;
+- колонка 'Факт сумма конверсий' сохраняется;
+- в комментарии по ГЕО добавляется CPA = расход / конверсии.
+
+1. Не использовать временные hotfix-вставки как постоянное решение.
+После проверки hotfix нужно переносить в основной чистый код.
+
+2. В коде не должно быть дублей функций.
+Особенно:
+- tdmeFindTotalRow_
+- tdmeFitCampaignRows_
+- tdmeFixTotalRowFormulaRanges_
+
+Если функция объявлена два раза, Apps Script использует последнюю, но код становится непредсказуемым.
+
+3. Поиск строки ИТОГО должен быть устойчивым:
+- искать ИТОГО по всей строке, а не только в первой колонке;
+- если ИТОГО не найдено, искать строку перед комментариями;
+- если и это не сработало, определять ИТОГО по последней строке кампаний;
+- выдавать понятную ошибку с номером строки.
+
+4. После сборки недельного отчёта обязательно запускать проверку:
+- строка ИТОГО ниже последней строки кампаний;
+- слово ИТОГО не попало в строки кампаний;
+- формулы ИТОГО тянутся до последней строки кампаний;
+- формулы не перезаписаны значениями.
+
+5. Автозапуск не должен молчать:
+- функция fillTdmEnoPreviousFullWeek должна быть обёрнута в try/catch;
+- при ошибке отправлять письмо;
+- ошибку всё равно пробрасывать дальше, чтобы она была видна в журнале выполнения.
+
+6. Перед выдачей нового кода:
+- отдавать TXT-файлом;
+- проверять, что нет дублей функций;
+- проверять, что ИТОГО ищется безопасно;
+- проверять, что есть post-build validation;
+- проверять, что формулы не перезаписываются.
+
+
+============================================================
+НИЖЕ ОСНОВНОЙ КОД ДЛЯ eno.gs
+============================================================
+*/
+
+// =====================
+// ТДМ — ЕНО недельный отчёт
+// Клиент: ilhaleontj3v
+// Вкладка: ЕНО
+// v21 clean protected: цели отчёта = Метрика AUTO + Ecommerce + Jivo + Callibri после подключения.
+// Старые внешние трекеры не используются в активной логике.
+// Формулы не перезаписываем, отчёт валидируем после создания,
+// при ошибке отправляем уведомление на почту.
+// =====================
+
+const TDME_CLIENT_LOGIN = 'ilhaleontj3v';
+const TDME_SHEET_NAME = 'ЕНО';
+const TDME_TIMEZONE = 'Europe/Moscow';
+
+const TDME_TEMPLATE_TITLE_PART = '11.05.2026 - 17.05.2026';
+const TDME_FIRST_REPORT_TOP_ROW = 527;
+const TDME_MONTH_PLAN = 210000;
+const TDME_METRIKA_COUNTER_ID = '92370926';
+
+// Почта для уведомлений об ошибках. Если пусто — берём почту активного пользователя.
+const TDME_NOTIFY_EMAIL = '';
+
+// Цели как в Мастере отчётов
+const TDME_GOALS = {
+  view3Pages: ['453453800'],      // Просмотр 3х страниц — микроцель
+  addToCart: ['504318736'],       // Ecommerce: добавление в корзину
+  purchase: ['504318735'],        // Ecommerce: покупка — факт
+  jivo: ['575188424'],            // Jivo-сайт: пользователь начал чат — факт
+  callibriSpam: [],               // Callibri: Спам — источник пока не подключён
+  callibriNonTarget: [],          // Callibri: Нецелевой_Лид — источник пока не подключён
+  callibriLeadA: [],              // Callibri: Лид_Квал_A — источник пока не подключён
+  callibriLeadC: []               // Callibri: Лид_Квал_C — источник пока не подключён
+};
+
+// Тестовый запуск — пересобрать неделю 25.05–31.05.2026
+function fillTdmEnoPeriodTest() {
+  tdmeFillReport_('2026-05-25', '2026-05-31', null);
+}
+
+// Запуск вручную — отчёт за 18.05–24.05
+function fillTdmEno18to24May() {
+  tdmeFillReport_('2026-05-18', '2026-05-24', TDME_FIRST_REPORT_TOP_ROW);
+}
+
+// Автоматический отчёт за прошлую полную неделю.
+// Важно: если отчёт не собрался, отправляем ошибку на почту,
+// чтобы ЕНО не "молчал" и проблема была видна сразу.
+function fillTdmEnoPreviousFullWeek() {
+  try {
+    const period = tdmePreviousFullWeek_();
+    tdmeFillReport_(period.dateFrom, period.dateTo, null);
+  } catch (e) {
+    tdmeNotifyError_('ЕНО не обновился', e);
+    throw e;
   }
-};
-
-const VAG_ENO_V26_RUNTIME = {
-  metrikaWarning: ''
-};
-
-const VAG_ENO_V26_TRIGGER_HANDLERS = [
-  'fillEnoPreviousFullWeekReport_v26',
-  'fillEnoPreviousFullWeek',
-  'createEnoWeeklyTriggerMonday9am'
-];
-
-// =====================
-// ЗАПУСК
-// =====================
-
-function fillEnoPreviousFullWeekReport_v26() {
-  const period = VAG_ENO_V26_getPreviousFullWeekPeriod_();
-  VAG_ENO_V26_fillWeeklyReportForPeriod_(period.dateFrom, period.dateTo);
 }
 
-function fillEnoWeek_2026_06_01_2026_06_07_v26() {
-  VAG_ENO_V26_fillWeeklyReportForPeriod_('2026-06-01', '2026-06-07');
-}
+// Создать триггер на понедельник 9:00
+function createTdmEnoWeeklyTriggerMonday9am() {
+  const triggers = ScriptApp.getProjectTriggers();
 
-function createEnoMonday10Trigger_v26() {
-  deleteEnoMonday10Triggers_v26();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'fillTdmEnoPreviousFullWeek') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
 
-  ScriptApp.newTrigger('fillEnoPreviousFullWeekReport_v26')
+  ScriptApp.newTrigger('fillTdmEnoPreviousFullWeek')
     .timeBased()
     .onWeekDay(ScriptApp.WeekDay.MONDAY)
-    .atHour(10)
+    .atHour(9)
+    .inTimezone(TDME_TIMEZONE)
     .create();
 }
 
-function deleteEnoMonday10Triggers_v26() {
-  ScriptApp.getProjectTriggers()
-    .filter(trigger => VAG_ENO_V26_TRIGGER_HANDLERS.indexOf(trigger.getHandlerFunction()) !== -1)
-    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
-}
-
-function checkEnoMetrikaAccess_v26() {
-  const period = VAG_ENO_V26_getPreviousFullWeekPeriod_();
-  const data = VAG_ENO_V26_getMetrikaGoalReachesByCampaign_(period.dateFrom, period.dateTo);
-  Logger.log('Доступ к Метрике есть. Кампаний с целями найдено: ' + Object.keys(data).length);
-}
-
-function VAG_ENO_V26_fillWeeklyReportForPeriod_(dateFrom, dateTo) {
-  VAG_ENO_V26_RUNTIME.metrikaWarning = '';
-
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(VAG_ENO_V26_CONFIG.SHEET_NAME);
+function tdmeFillReport_(dateFrom, dateTo, forcedTopRow) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(TDME_SHEET_NAME);
 
   if (!sheet) {
-    throw new Error('Не найдена вкладка: ' + VAG_ENO_V26_CONFIG.SHEET_NAME);
+    throw new Error('Не найден лист: ' + TDME_SHEET_NAME);
   }
 
-  const rows = VAG_ENO_V26_getCampaignReport_(dateFrom, dateTo);
-  VAG_ENO_V26_overlayMetrikaGoalReaches_(rows, dateFrom, dateTo);
-  rows.sort((a, b) => Number(b.cost || 0) - Number(a.cost || 0));
+  // Сначала безопасно получаем Директ и Метрику. Callibri здесь не вызывается.
+  const rows = tdmeLoadCampaignRows_(dateFrom, dateTo);
+  const monthRows = tdmeLoadCampaignRows_(tdmeMonthStart_(dateTo), dateTo);
 
-  const title = VAG_ENO_V26_buildTitle_(dateFrom, dateTo);
-  const block = VAG_ENO_V26_getOrCreateBlock_(sheet, title);
+  // Один неизменяемый снимок Callibri за неделю используем во всей цепочке:
+  // ДБ -> распределение по кампаниям ЕНО -> итоги -> сверка.
+  const callibriSnapshot = tdmGptCallibriAggregateYandexCpcByCampaign_(dateFrom, dateTo);
+  tdmApplyCallibriAggregateToDbPeriod_(callibriSnapshot, dateFrom, dateTo);
+  tdmeApplyCallibriGoals_(rows, dateFrom, dateTo, callibriSnapshot);
+  rows.sort((a, b) => b.cost - a.cost);
 
-  VAG_ENO_V26_setTitle_(sheet, block.topRow, title);
-  VAG_ENO_V26_applyGoalHeaders_(sheet, block.headerRow);
-  VAG_ENO_V26_fitRowsCount_(sheet, block, rows.length);
+  const title = tdmeTitle_(dateFrom, dateTo);
+  const topRow = forcedTopRow || tdmeNextTopRow_(sheet, title);
 
-  const headerMap = VAG_ENO_V26_getHeaderMap_(sheet, block.headerRow);
+  // Важно: копируем предыдущий недельный блок, чтобы сохранить формулы/форматы.
+  // Если текущий блок уже есть, он пересобирается поверх него.
+  tdmeCopyPreviousReportBlock_(sheet, topRow, title);
+
+  let block = tdmeGetBlock_(sheet, topRow);
+
+  // Если из старого шаблона/ручных правок приехала лишняя колонка "Уникальный звонок",
+  // удаляем её только внутри текущего недельного блока, не трогая весь лист.
+  tdmeRemoveExtraUniqueCallColumn_(sheet, block);
+
+  // После локального сдвига перечитываем блок, чтобы строки/колонки были актуальны.
+  block = tdmeGetBlock_(sheet, topRow);
+  block = tdmeFitCampaignRows_(sheet, block, rows.length);
+
+  const header = tdmeHeaderMap_(sheet, block.headerRow);
   const dataStartRow = block.headerRow + 1;
-  const rowsCount = Math.max(rows.length, 1);
+  const dataRowsCount = Math.max(rows.length, 1);
+  const dataEndRow = dataStartRow + dataRowsCount - 1;
 
-  VAG_ENO_V26_clearRawCells_(sheet, headerMap, dataStartRow, rowsCount);
-  VAG_ENO_V26_fillCampaignRows_(sheet, headerMap, dataStartRow, rows);
-  VAG_ENO_V26_setFactFormulas_(sheet, headerMap, dataStartRow, block.totalRow);
-  VAG_ENO_V26_cleanFormattingAfterFill_(sheet, headerMap, dataStartRow, rowsCount, rows);
+  // Критично: строка ИТОГО должна быть строго сразу после последней строки кампаний.
+  // Не доверяем старому поиску по скопированному блоку, потому что при копировании/удалении строк
+  // метка ИТОГО может съехать или исчезнуть.
+  block.totalRow = tdmeForceTotalRowAfterData_(sheet, header, dataEndRow, block.totalRow);
+  tdmeApplyUpdatedGoalColumns_(sheet, block.headerRow, block.totalRow, header);
 
-  const comment = VAG_ENO_V26_buildComment_(rows, dateFrom, dateTo);
-  const commentStartRow = VAG_ENO_V26_prepareCommentArea_(sheet, block);
-  VAG_ENO_V26_writeComment_(sheet, commentStartRow, comment);
+  tdmeSetPlain_(sheet, block.topRow, 1, title);
 
-  SpreadsheetApp.flush();
+  // Чистим только заполняемые колонки строк кампаний.
+  // Это убирает случайные формулы ИТОГО из строк кампаний,
+  // но не трогает расчётные колонки CTR / CPC / CPA / CR и т.д.
+  tdmeClearDataInputCells_(sheet, header, dataStartRow, dataRowsCount);
+  tdmeFillRows_(sheet, header, dataStartRow, rows);
+
+  // Строку ИТОГО значениями НЕ перезаписываем.
+  // Только фиксируем метку и диапазоны формул под фактический конец текущей недели.
+  tdmeEnsureTotalLabel_(sheet, header, block.totalRow);
+  tdmeFixTotalRowFormulaRanges_(sheet, block.totalRow, dataStartRow, dataEndRow);
+  tdmeFixTopSummaryFormulas_(sheet, block.topRow, block.totalRow);
+
+  tdmeFormatBounceColumn_(sheet, header, dataStartRow, dataRowsCount, block.totalRow);
+  tdmeHighlightGreenRows_(sheet, header, dataStartRow, dataRowsCount, rows);
+
+  const comments = tdmeBuildComments_(rows, monthRows, dateFrom, dateTo);
+  const commentRow = tdmeFindCommentRow_(sheet, block.totalRow) || block.totalRow + 3;
+  tdmeWriteComments_(sheet, commentRow, comments);
+
+  // Контрольная проверка, чтобы отчёт не считался успешным, если блок собрался криво.
+  tdmeValidateReportBlock_(sheet, block, dataStartRow, dataEndRow, title);
+}
+
+/**
+ * REF-ENO-20260708
+ * Безопасные утилиты для пакетной работы и API.
+ */
+function tdmeSafeLog_(context, error) {
+  const message =
+    '[ENO] ' + context + ': ' +
+    (error && error.message ? error.message : String(error || 'unknown error'));
+
+  Logger.log(message);
+
+  if (error && error.stack) {
+    Logger.log(error.stack);
+  }
+}
+
+function tdmeNormalizeToken_(token) {
+  return String(token || '')
+    .replace(/^OAuth\s+/i, '')
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+}
+
+function tdmeColumnLetter_(column) {
+  let temp = Number(column || 0);
+  let letter = '';
+
+  while (temp > 0) {
+    const modulo = (temp - 1) % 26;
+    letter = String.fromCharCode(65 + modulo) + letter;
+    temp = Math.floor((temp - modulo) / 26);
+  }
+
+  return letter;
+}
+
+function tdmeSafeJsonParse_(text, context) {
+  try {
+    return JSON.parse(String(text || '{}'));
+  } catch (error) {
+    throw new Error(
+      context + ': не удалось распарсить JSON. Ответ: ' +
+      String(text || '').slice(0, 1000)
+    );
+  }
+}
+
+function tdmeFetchWithRetry_(url, options, config) {
+  const maxAttempts = Number(config && config.maxAttempts || 5);
+  const sleepMs = Number(config && config.sleepMs || 3000);
+  const retryCodes = (config && config.retryCodes) || [201, 202, 429, 500, 502, 503, 504];
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      const code = response.getResponseCode();
+      const text = response.getContentText();
+
+      if (code >= 200 && code < 300 && code !== 201 && code !== 202) {
+        return {
+          code: code,
+          text: text,
+          response: response
+        };
+      }
+
+      if (retryCodes.indexOf(code) !== -1 && attempt < maxAttempts) {
+        Logger.log(
+          '[ENO] API retry ' + attempt + '/' + maxAttempts +
+          '. Code=' + code +
+          '. Body=' + String(text || '').slice(0, 500)
+        );
+        Utilities.sleep(sleepMs);
+        continue;
+      }
+
+      throw new Error('HTTP ' + code + '. Ответ: ' + String(text || '').slice(0, 2000));
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < maxAttempts) {
+        Logger.log(
+          '[ENO] API exception retry ' + attempt + '/' + maxAttempts +
+          ': ' + (error && error.message ? error.message : String(error))
+        );
+        Utilities.sleep(sleepMs);
+        continue;
+      }
+    }
+  }
+
+  throw lastError || new Error('API request failed without response');
 }
 
 // =====================
-// ДИРЕКТ: базовые метрики + МЕТРИКА: достижения целей
+// ДИРЕКТ
 // =====================
 
-function VAG_ENO_V26_getCampaignReport_(dateFrom, dateTo) {
-  const goalIds = Object.values(VAG_ENO_V26_CONFIG.GOALS).map(id => Number(id));
+function tdmeLoadCampaignRows_(dateFrom, dateTo) {
+  const goalIds = tdmeAllGoalIds_();
 
-  const reportBody = {
+  const body = {
     params: {
       SelectionCriteria: {
         DateFrom: dateFrom,
         DateTo: dateTo
       },
-      Goals: goalIds,
-      AttributionModels: [
-        VAG_ENO_V26_CONFIG.ATTRIBUTION_MODEL
-      ],
+      Goals: goalIds.map(id => Number(id)),
+      AttributionModels: ['AUTO'],
       FieldNames: [
+        'CampaignId',
         'CampaignName',
         'Impressions',
         'Clicks',
         'Cost',
-        'AvgCpc',
+        'AvgEffectiveBid',
         'AvgImpressionPosition',
         'AvgTrafficVolume',
         'BounceRate',
         'AvgPageviews',
         'Conversions'
       ],
-      OrderBy: [
-        { Field: 'Cost', SortOrder: 'DESCENDING' }
-      ],
-      ReportName: 'eno_weekly_' + VAG_ENO_V26_CONFIG.CLIENT_LOGIN + '_' + dateFrom + '_' + dateTo + '_' + Utilities.getUuid(),
+      ReportName: 'tdm_eno_' + dateFrom + '_' + dateTo + '_' + Utilities.getUuid(),
       ReportType: 'CAMPAIGN_PERFORMANCE_REPORT',
       DateRangeType: 'CUSTOM_DATE',
       Format: 'TSV',
@@ -172,435 +338,757 @@ function VAG_ENO_V26_getCampaignReport_(dateFrom, dateTo) {
     }
   };
 
-  const text = VAG_ENO_V26_requestDirectReport_(reportBody);
-  return VAG_ENO_V26_parseCampaignTsv_(text);
+  const text = tdmeDirectRequest_(body);
+  const rows = tdmeParseCampaignTsv_(text);
+
+  tdmeApplyMetrikaAutomaticGoals_(rows, dateFrom, dateTo);
+
+  return rows;
 }
 
-function VAG_ENO_V26_requestDirectReport_(reportBody) {
-  const token = PropertiesService.getScriptProperties().getProperty('YANDEX_TOKEN');
-
-  if (!token) {
-    throw new Error('Не найден YANDEX_TOKEN в свойствах скрипта');
+function tdmeApplyCallibriGoals_(rows, dateFrom, dateTo, byDateCampaign) {
+  if (!byDateCampaign || typeof byDateCampaign !== 'object') {
+    throw new Error('ЕНО: снимок Callibri не передан. Повторный запрос API внутри распределения запрещён.');
   }
 
-  const url = 'https://api.direct.yandex.com/json/v5/reports';
+  const byCampaign = tdmCallibriRollupByCampaign_(byDateCampaign);
+  const directById = {};
+  const directByName = {};
 
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      Authorization: 'Bearer ' + token,
-      'Client-Login': VAG_ENO_V26_CONFIG.CLIENT_LOGIN,
-      'Accept-Language': 'ru',
-      processingMode: 'auto',
-      returnMoneyInMicros: 'false',
-      skipReportHeader: 'true',
-      skipColumnHeader: 'false',
-      skipReportSummary: 'true'
-    },
-    payload: JSON.stringify(reportBody),
-    muteHttpExceptions: true
-  };
+  rows.forEach(function(row, index) {
+    row.goals = row.goals || {};
+    row.goals.callibriSpam = 0;
+    row.goals.callibriNonTarget = 0;
+    row.goals.callibriLeadA = 0;
+    row.goals.callibriLeadB = 0;
+    row.goals.callibriLeadC = 0;
 
-  for (let attempt = 1; attempt <= 10; attempt++) {
-    const response = UrlFetchApp.fetch(url, options);
-    const code = response.getResponseCode();
-    const text = response.getContentText();
+    const campaignId = String(row.campaignId || '').trim();
+    const campaignNameKey = tdmGptCallibriCampaignKey_(row.campaignName);
 
-    if (code === 200) return text;
+    if (campaignId) {
+      if (!directById[campaignId]) directById[campaignId] = [];
+      directById[campaignId].push(index);
+    }
+    if (!directByName[campaignNameKey]) directByName[campaignNameKey] = [];
+    directByName[campaignNameKey].push(index);
+  });
 
-    if (code === 201 || code === 202) {
-      Utilities.sleep(5000);
-      continue;
+  Object.keys(byCampaign).forEach(function(key) {
+    const callibri = byCampaign[key] || tdmCallibriEmptyReportRow_();
+    const total = Number(callibri.callibriSpam || 0) +
+      Number(callibri.callibriNonTarget || 0) +
+      Number(callibri.callibriLeadA || 0) +
+      Number(callibri.callibriLeadB || 0) +
+      Number(callibri.callibriLeadC || 0);
+    if (!total) return;
+
+    const campaignId = String(callibri.campaignId || '').trim();
+    const idMatches = campaignId && directById[campaignId] ? directById[campaignId] : [];
+    const nameMatches = directByName[key] || [];
+    const matches = idMatches.length ? idMatches : nameMatches;
+
+    if (matches.length > 1) {
+      Logger.log('[ENO] Callibri: найдено несколько строк Директа для ключа ' + key + '. Агрегат будет записан один раз в строку ' + (matches[0] + 1) + '.');
     }
 
-    throw new Error('Ошибка Директа: ' + code + '\n' + text);
-  }
-
-  throw new Error('Отчёт долго формируется. Запусти позже.');
-}
-
-function VAG_ENO_V26_parseCampaignTsv_(tsvText) {
-  const lines = String(tsvText || '').trim().split(/\r?\n/);
-  if (lines.length < 2) return [];
-
-  const headers = lines[0]
-    .split('\t')
-    .map(h => String(h).replace(/^\uFEFF/, '').trim());
-
-  const idx = {};
-  headers.forEach((h, i) => idx[h] = i);
-
-  return lines.slice(1)
-    .filter(line => String(line).trim() !== '')
-    .map(line => {
-      const row = line.split('\t');
-      const campaignName = String(row[idx['CampaignName']] || '').trim();
-
-      if (!campaignName) return null;
-
-      const goals = {
-        bb60sec2pages: VAG_ENO_V26_goalValue_(row, idx, VAG_ENO_V26_CONFIG.GOALS.bb60sec2pages),
-        phone8835: VAG_ENO_V26_goalValue_(row, idx, VAG_ENO_V26_CONFIG.GOALS.phone8835),
-        phone8865: VAG_ENO_V26_goalValue_(row, idx, VAG_ENO_V26_CONFIG.GOALS.phone8865),
-        max: VAG_ENO_V26_goalValue_(row, idx, VAG_ENO_V26_CONFIG.GOALS.max),
-        telegramSlider: VAG_ENO_V26_goalValue_(row, idx, VAG_ENO_V26_CONFIG.GOALS.telegramSlider),
-        route: VAG_ENO_V26_goalValue_(row, idx, VAG_ENO_V26_CONFIG.GOALS.route),
-        uisCalls: VAG_ENO_V26_goalValue_(row, idx, VAG_ENO_V26_CONFIG.GOALS.uisCalls),
-        uisUniqueCalls: VAG_ENO_V26_goalValue_(row, idx, VAG_ENO_V26_CONFIG.GOALS.uisUniqueCalls),
-        uisLeads: VAG_ENO_V26_goalValue_(row, idx, VAG_ENO_V26_CONFIG.GOALS.uisLeads)
-      };
-
-      const item = {
-        campaignName: campaignName,
-        campaignType: VAG_ENO_V26_getCampaignType_(campaignName),
-        impressions: VAG_ENO_V26_toNumber_(row[idx['Impressions']]),
-        clicks: VAG_ENO_V26_toNumber_(row[idx['Clicks']]),
-        cost: VAG_ENO_V26_toNumber_(row[idx['Cost']]),
-        avgEffectiveBid: idx['AvgCpc'] !== undefined ? VAG_ENO_V26_toNumber_(row[idx['AvgCpc']]) : 0,
-        avgPosition: idx['AvgImpressionPosition'] !== undefined ? VAG_ENO_V26_toNumber_(row[idx['AvgImpressionPosition']]) : 0,
-        avgTraffic: idx['AvgTrafficVolume'] !== undefined ? VAG_ENO_V26_toNumber_(row[idx['AvgTrafficVolume']]) : 0,
-        bounceRate: idx['BounceRate'] !== undefined ? VAG_ENO_V26_toRate_(row[idx['BounceRate']]) : 0,
-        depth: idx['AvgPageviews'] !== undefined ? VAG_ENO_V26_toNumber_(row[idx['AvgPageviews']]) : 0,
-        goals: goals
-      };
-
-      return item;
-    })
-    .filter(item => item && (
-      item.impressions > 0 ||
-      item.clicks > 0 ||
-      item.cost > 0 ||
-      item.goals.bb60sec2pages > 0 ||
-      item.goals.phone8835 > 0 ||
-      item.goals.phone8865 > 0 ||
-      item.goals.max > 0 ||
-      item.goals.telegramSlider > 0 ||
-      item.goals.route > 0 ||
-      item.goals.uisCalls > 0 ||
-      item.goals.uisUniqueCalls > 0 ||
-      item.goals.uisLeads > 0
-    ));
-}
-
-function VAG_ENO_V26_goalValue_(row, idx, goalId) {
-  if (!goalId) return 0;
-
-  const exact = 'Conversions_' + goalId + '_' + VAG_ENO_V26_CONFIG.ATTRIBUTION_MODEL;
-  if (idx[exact] !== undefined) return VAG_ENO_V26_toNumber_(row[idx[exact]]);
-
-  const prefix = 'Conversions_' + goalId + '_';
-  for (const header in idx) {
-    if (String(header).indexOf(prefix) === 0) {
-      return VAG_ENO_V26_toNumber_(row[idx[header]]);
-    }
-  }
-
-  return 0;
-}
-
-
-// =====================
-// МЕТРИКА: ДОСТИЖЕНИЯ ЦЕЛЕЙ ПО КАМПАНИЯМ ДИРЕКТА
-// =====================
-
-function VAG_ENO_V26_overlayMetrikaGoalReaches_(rows, dateFrom, dateTo) {
-  let metrikaMap = {};
-
-  try {
-    metrikaMap = VAG_ENO_V26_getMetrikaGoalReachesByCampaign_(dateFrom, dateTo);
-  } catch (e) {
-    const message = e && e.message ? e.message : String(e);
-    VAG_ENO_V26_RUNTIME.metrikaWarning = VAG_ENO_V26_shortenWarning_(message);
-    Logger.log('Метрика API недоступна, цели оставлены из Директа: ' + message);
-    return;
-  }
-
-  const goalEntries = VAG_ENO_V26_getGoalEntries_();
-  const existingKeys = {};
-
-  rows.forEach(item => {
-    const key = VAG_ENO_V26_campaignMatchKey_(item.campaignName);
-    existingKeys[key] = true;
-
-    if (!metrikaMap[key]) {
-      goalEntries.forEach(entry => item.goals[entry.key] = 0);
+    if (matches.length) {
+      tdmeAddCallibriToCampaignRow_(rows[matches[0]], callibri);
       return;
     }
 
-    goalEntries.forEach(entry => {
-      item.goals[entry.key] = Number(metrikaMap[key].goals[entry.key] || 0);
-    });
+    // Добавляем строку только для реально нераспознанного utm_campaign из API.
+    // Служебные строки "сверка", "дельта" и "не распределено" не создаются.
+    const rawCampaign = String(callibri.utmCampaign || '').trim();
+    const unmatchedName = rawCampaign || campaignId || 'Callibri без utm_campaign';
+    const unmatchedRow = tdmeBuildUnmatchedCallibriRow_(unmatchedName, campaignId);
+    tdmeAddCallibriToCampaignRow_(unmatchedRow, callibri);
+    rows.push(unmatchedRow);
   });
 
-  Object.keys(metrikaMap).forEach(key => {
-    if (existingKeys[key]) return;
-
-    const goals = VAG_ENO_V26_emptyGoals_();
-    goalEntries.forEach(entry => goals[entry.key] = Number(metrikaMap[key].goals[entry.key] || 0));
-
-    const hasGoals = goalEntries.some(entry => Number(goals[entry.key] || 0) > 0);
-    if (!hasGoals) return;
-
-    const campaignName = metrikaMap[key].campaignName;
-
-    rows.push({
-      campaignName: campaignName,
-      campaignType: VAG_ENO_V26_getCampaignType_(campaignName),
-      impressions: 0,
-      clicks: 0,
-      cost: 0,
-      avgEffectiveBid: 0,
-      avgPosition: 0,
-      avgTraffic: 0,
-      bounceRate: 0,
-      depth: 0,
-      goals: goals
-    });
-  });
+  const apiTotalsForReconcile = tdmeCallibriTotalsFromRollup_(byCampaign);
+  const enoTotals = tdmeCallibriTotalsFromRows_(rows);
+  tdmeAssertCallibriTotalsEqual_('ЕНО: распределение Callibri по кампаниям', apiTotalsForReconcile, enoTotals);
+  tdmeReconcileCallibriWithDb_(rows, dateFrom, dateTo, apiTotalsForReconcile);
 }
 
-function VAG_ENO_V26_getMetrikaGoalReachesByCampaign_(dateFrom, dateTo) {
-  const token = VAG_ENO_V26_getMetrikaToken_();
+function tdmeAddCallibriToCampaignRow_(row, callibri) {
+  row.goals = row.goals || {};
+  row.goals.callibriSpam = Number(row.goals.callibriSpam || 0) + Number(callibri.callibriSpam || 0);
+  row.goals.callibriNonTarget = Number(row.goals.callibriNonTarget || 0) + Number(callibri.callibriNonTarget || 0);
+  row.goals.callibriLeadA = Number(row.goals.callibriLeadA || 0) + Number(callibri.callibriLeadA || 0);
+  row.goals.callibriLeadB = Number(row.goals.callibriLeadB || 0) + Number(callibri.callibriLeadB || 0);
+  row.goals.callibriLeadC = Number(row.goals.callibriLeadC || 0) + Number(callibri.callibriLeadC || 0);
+}
 
-  if (!token) {
-    throw new Error('Не найден METRIKA_TOKEN или YANDEX_TOKEN в свойствах скрипта');
-  }
-
-  const goalEntries = VAG_ENO_V26_getGoalEntries_();
-  const metrics = goalEntries
-    .map(entry => 'ym:s:goal' + entry.id + 'reaches')
-    .join(',');
-
-  const params = {
-    ids: VAG_ENO_V26_CONFIG.METRIKA_COUNTER_ID,
-    date1: dateFrom,
-    date2: dateTo,
-    metrics: metrics,
-    dimensions: 'ym:s:' + VAG_ENO_V26_CONFIG.METRIKA_ATTRIBUTION + 'DirectClickOrderName',
-    accuracy: 'full',
-    limit: '100000',
-    lang: 'ru'
+function tdmeBuildUnmatchedCallibriRow_(campaignName, campaignId) {
+  return {
+    campaignId: campaignId || '',
+    campaignName: campaignName,
+    campaignType: 'Callibri: не распознано в Директе',
+    geo: 'н/а',
+    impressions: 0,
+    clicks: 0,
+    cost: 0,
+    avgBid: 0,
+    avgPosition: '',
+    avgTraffic: '',
+    bounce: 0,
+    depth: 0,
+    goals: {
+      view3Pages: 0,
+      callibriSpam: 0,
+      callibriNonTarget: 0,
+      addToCart: 0,
+      purchase: 0,
+      jivo: 0,
+      callibriLeadA: 0,
+      callibriLeadB: 0,
+      callibriLeadC: 0
+    }
   };
+}
 
-  const url = 'https://api-metrika.yandex.net/stat/v1/data?' + VAG_ENO_V26_toQueryString_(params);
+function tdmeCallibriTotalsFromRollup_(byCampaign) {
+  const totals = { spam: 0, nonTarget: 0, leadA: 0, leadB: 0, leadC: 0 };
+  Object.keys(byCampaign || {}).forEach(function(key) {
+    const item = byCampaign[key] || {};
+    totals.spam += Number(item.callibriSpam || 0);
+    totals.nonTarget += Number(item.callibriNonTarget || 0);
+    totals.leadA += Number(item.callibriLeadA || 0);
+    totals.leadB += Number(item.callibriLeadB || 0);
+    totals.leadC += Number(item.callibriLeadC || 0);
+  });
+  return totals;
+}
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'get',
-    headers: {
-      Authorization: 'OAuth ' + token
-    },
-    muteHttpExceptions: true
+function tdmeCallibriTotalsFromRows_(rows) {
+  const totals = { spam: 0, nonTarget: 0, leadA: 0, leadB: 0, leadC: 0 };
+  (rows || []).forEach(function(row) {
+    const goals = row.goals || {};
+    totals.spam += Number(goals.callibriSpam || 0);
+    totals.nonTarget += Number(goals.callibriNonTarget || 0);
+    totals.leadA += Number(goals.callibriLeadA || 0);
+    totals.leadB += Number(goals.callibriLeadB || 0);
+    totals.leadC += Number(goals.callibriLeadC || 0);
+  });
+  return totals;
+}
+
+function tdmeAssertCallibriTotalsEqual_(context, expected, actual) {
+  const mismatches = [];
+  ['spam', 'nonTarget', 'leadA', 'leadB', 'leadC'].forEach(function(key) {
+    if (Number(expected[key] || 0) !== Number(actual[key] || 0)) {
+      mismatches.push(key + ': expected=' + Number(expected[key] || 0) + ', actual=' + Number(actual[key] || 0));
+    }
+  });
+  if (mismatches.length) throw new Error(context + ': ' + mismatches.join('; '));
+}
+
+function tdmeReconcileCallibriWithDb_(rows, dateFrom, dateTo, providedApiTotals) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const db = ss.getSheetByName('ДБ');
+  if (!db) throw new Error('ЕНО: не найден лист ДБ для сверки Callibri.');
+
+  const dbTotals = { spam: 0, nonTarget: 0, leadA: 0, leadB: 0, leadC: 0 };
+  const apiTotals = providedApiTotals || { spam: 0, nonTarget: 0, leadA: 0, leadB: 0, leadC: 0 };
+  const dates = tdmCallibriApiDates_(dateFrom, dateTo);
+  let hasLeadBColumn = false;
+
+  dates.forEach(function(apiDate) {
+    const headerRow = TDM_DB.findHeaderRowForMonth_(db, apiDate);
+    const header = TDM_DB.getHeaderMap_(db, headerRow);
+    const sheetRow = TDM_DB.findDateRow_(db, header.date, headerRow, apiDate);
+    if (!sheetRow) throw new Error('ЕНО: в ДБ не найдена дата ' + apiDate);
+
+    const values = db.getRange(sheetRow, 1, 1, db.getLastColumn()).getValues()[0];
+    const read = function(col) { return col > 0 ? tdmeToNumber_(values[col - 1]) : 0; };
+    dbTotals.spam += read(header.callibriSpam);
+    dbTotals.nonTarget += read(header.callibriNonTarget);
+    dbTotals.leadA += read(header.callibriLeadA);
+    dbTotals.leadB += read(header.callibriLeadB);
+    dbTotals.leadC += read(header.callibriLeadC);
+    hasLeadBColumn = hasLeadBColumn || header.callibriLeadB > 0;
   });
 
-  const code = response.getResponseCode();
-  const text = response.getContentText();
-
-  if (code !== 200) {
-    if (code === 403) {
-      throw new Error('Ошибка Метрики 403. Токен есть, но Метрика не отдала данные по счётчику ' + VAG_ENO_V26_CONFIG.METRIKA_COUNTER_ID + '. Проверь, что METRIKA_TOKEN от аккаунта с доступом к счётчику. Ответ API: ' + text);
-    }
-    throw new Error('Ошибка Метрики: ' + code + '\n' + text);
+  if (Number(apiTotals.leadB || 0) > 0 && !hasLeadBColumn) {
+    throw new Error('ЕНО: Callibri вернул Лид_Квал_B=' + apiTotals.leadB + ', но отдельной колонки B в ДБ нет. B не был прибавлен к A.');
   }
 
-  const json = JSON.parse(text);
-  const result = {};
+  tdmeAssertCallibriTotalsEqual_('ЕНО: Callibri API и ДБ не совпали', apiTotals, dbTotals);
 
-  (json.data || []).forEach(item => {
-    const rawName = item.dimensions && item.dimensions[0] ? item.dimensions[0].name : '';
-    const campaignName = VAG_ENO_V26_cleanMetrikaCampaignName_(rawName);
-    const key = VAG_ENO_V26_campaignMatchKey_(campaignName);
+  return;
+}
 
-    if (!key || key === 'none' || key === 'not set') return;
+function tdmeDirectRequest_(body) {
+  try {
+    const token = tdmeNormalizeToken_(
+      PropertiesService.getScriptProperties().getProperty('YANDEX_TOKEN')
+    );
 
-    if (!result[key]) {
-      result[key] = {
-        campaignName: campaignName,
-        goals: VAG_ENO_V26_emptyGoals_()
-      };
+    if (!token) {
+      throw new Error('Не найден YANDEX_TOKEN в Script Properties.');
     }
 
-    goalEntries.forEach((entry, index) => {
-      result[key].goals[entry.key] += VAG_ENO_V26_toNumber_((item.metrics || [])[index]);
+    if (!body || !body.params) {
+      throw new Error('Пустое тело запроса Директа.');
+    }
+
+    const url = 'https://api.direct.yandex.com/json/v5/reports';
+
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(body),
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Client-Login': TDME_CLIENT_LOGIN,
+        'Accept-Language': 'ru',
+        processingMode: 'auto',
+        returnMoneyInMicros: 'false',
+        skipReportHeader: 'true',
+        skipColumnHeader: 'false',
+        skipReportSummary: 'true'
+      },
+      muteHttpExceptions: true
+    };
+
+    const result = tdmeFetchWithRetry_(url, options, {
+      maxAttempts: 8,
+      sleepMs: 4000,
+      retryCodes: [201, 202, 429, 500, 502, 503, 504]
     });
+
+    return result.text;
+  } catch (error) {
+    tdmeSafeLog_('tdmeDirectRequest_', error);
+    throw error;
+  }
+}
+
+function tdmeApplyMetrikaAutomaticGoals_(rows, dateFrom, dateTo) {
+  let metrika;
+
+  try {
+    metrika = tdmeFetchMetrikaAutomaticGoalsByCampaign_(dateFrom, dateTo);
+  } catch (e) {
+    Logger.log(
+      'WARNING: ЕНО продолжен без дополнительного блока целей Метрики за ' +
+      dateFrom + ' - ' + dateTo +
+      '. Причина: ' + (e && e.message ? e.message : String(e))
+    );
+
+    // Важно: не роняем весь недельный отчёт.
+    // Данные из Директа уже загружены, блок ЕНО должен собраться.
+    return;
+  }
+
+  rows.forEach(row => {
+    const key = tdmeCampaignKey_(row.campaignName);
+    const goals = metrika.byCampaign[key] || tdmeEmptyMetrikaGoals_();
+
+    row.goals.purchase = goals.purchase;
+    row.goals.jivo = goals.jivo;
   });
+
+  if (tdmeHasMetrikaGoals_(metrika.noCampaign)) {
+    rows.push(tdmeBuildMetrikaNoCampaignRow_(metrika.noCampaign));
+  }
+}
+
+function tdmeFetchMetrikaAutomaticGoalsByCampaign_(dateFrom, dateTo) {
+  try {
+    const token = tdmeNormalizeToken_(
+      PropertiesService.getScriptProperties().getProperty('YANDEX_METRIKA_TOKEN') ||
+      PropertiesService.getScriptProperties().getProperty('YANDEX_TOKEN')
+    );
+
+    if (!token) {
+      throw new Error('Не найден YANDEX_METRIKA_TOKEN или YANDEX_TOKEN в Script Properties.');
+    }
+
+    if (!dateFrom || !dateTo) {
+      throw new Error('Не задан период Метрики: dateFrom/dateTo.');
+    }
+
+    const params = {
+      ids: TDME_METRIKA_COUNTER_ID,
+      date1: dateFrom,
+      date2: dateTo,
+      dimensions: 'ym:s:automaticTrafficSource,ym:s:lastsignUTMCampaign',
+      metrics: [
+        'ym:s:goal504318735reaches',
+        'ym:s:goal575188424reaches'
+      ].join(','),
+      accuracy: 'full',
+      limit: 10000
+    };
+
+    const query = Object.keys(params)
+      .map(key => encodeURIComponent(key) + '=' + encodeURIComponent(params[key]))
+      .join('&');
+
+    const result = tdmeFetchWithRetry_(
+      'https://api-metrika.yandex.net/stat/v1/data?' + query,
+      {
+        method: 'get',
+        headers: {
+          Authorization: 'OAuth ' + token
+        },
+        muteHttpExceptions: true
+      },
+      {
+        maxAttempts: 4,
+        sleepMs: 3000,
+        retryCodes: [429, 500, 502, 503, 504]
+      }
+    );
+
+    const json = tdmeSafeJsonParse_(result.text, 'Метрика goals by campaign');
+
+    const output = {
+      byCampaign: {},
+      noCampaign: tdmeEmptyMetrikaGoals_()
+    };
+
+    (json.data || []).forEach(item => {
+      const dimensions = item && item.dimensions ? item.dimensions : [];
+      const metrics = item && item.metrics ? item.metrics : [];
+      const source = dimensions[0] || {};
+
+      if (!tdmeIsMetrikaAdTraffic_(source)) {
+        return;
+      }
+
+      const campaignName = dimensions[1] && dimensions[1].name;
+      const goals = {
+        purchase: tdmeToNumber_(metrics[0]),
+        jivo: tdmeToNumber_(metrics[1])
+      };
+
+      if (!campaignName) {
+        tdmeAddMetrikaGoals_(output.noCampaign, goals);
+        return;
+      }
+
+      const key = tdmeCampaignKey_(campaignName);
+
+      if (!output.byCampaign[key]) {
+        output.byCampaign[key] = tdmeEmptyMetrikaGoals_();
+      }
+
+      tdmeAddMetrikaGoals_(output.byCampaign[key], goals);
+    });
+
+    return output;
+  } catch (error) {
+    tdmeSafeLog_('tdmeFetchMetrikaAutomaticGoalsByCampaign_', error);
+    throw error;
+  }
+}
+
+function tdmeBuildMetrikaNoCampaignRow_(goals) {
+  return {
+    campaignName: 'Без источника. Метрика',
+    campaignType: 'н/а',
+    geo: 'РФ',
+    impressions: 0,
+    clicks: 0,
+    cost: 0,
+    avgBid: 0,
+    avgPosition: '',
+    avgTraffic: '',
+    bounce: 0,
+    depth: 0,
+    goals: {
+      view3Pages: 0,
+      callibriSpam: 0,
+      callibriNonTarget: 0,
+      addToCart: 0,
+      purchase: goals.purchase,
+      jivo: goals.jivo,
+      callibriLeadA: 0,
+      callibriLeadB: 0,
+      callibriLeadC: 0
+    }
+  };
+}
+
+function tdmeEmptyMetrikaGoals_() {
+  return {
+    purchase: 0,
+    jivo: 0
+  };
+}
+
+function tdmeAddMetrikaGoals_(target, source) {
+  target.purchase += Number(source.purchase || 0);
+  target.jivo += Number(source.jivo || 0);
+}
+
+function tdmeHasMetrikaGoals_(goals) {
+  return Number(goals.purchase || 0) +
+    Number(goals.jivo || 0) > 0;
+}
+
+function tdmeIsMetrikaAdTraffic_(source) {
+  const id = tdmeNormalize_(source && source.id);
+  const name = tdmeNormalize_(source && source.name);
+
+  return id === 'ad' || name === 'ad traffic' || name === 'переходы по рекламе';
+}
+
+function tdmeCampaignKey_(value) {
+  let text = tdmeNormalize_(value);
+
+  if (text.indexOf('|') !== -1) {
+    const parts = text.split('|').map(part => part.trim()).filter(Boolean);
+    text = parts[parts.length - 1] || text;
+  }
+
+  text = text.replace(/-\d+$/g, '');
+  text = text.replace(/[^a-zа-я0-9]+/g, '_');
+  text = text.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+
+  return text;
+}
+
+function tdmeParseCampaignTsv_(tsvText) {
+  const text = String(tsvText || '').trim();
+
+  if (!text) return [];
+
+  const lines = text.split(/\r?\n/).filter(line => String(line).trim() !== '');
+
+  const headerIndex = lines.findIndex(line => {
+    const cols = line.split('\t');
+    return cols.indexOf('CampaignName') !== -1 && cols.indexOf('Cost') !== -1;
+  });
+
+  if (headerIndex === -1) {
+    throw new Error('Не найдена строка заголовков в отчёте Директа.');
+  }
+
+  const headers = lines[headerIndex]
+    .split('\t')
+    .map(header => String(header).replace(/^\uFEFF/, '').trim());
+
+  const idxCampaign = tdmeRequireColumn_(headers, 'CampaignName');
+  const idxCampaignId = tdmeRequireColumn_(headers, 'CampaignId');
+  const idxImpressions = tdmeRequireColumn_(headers, 'Impressions');
+  const idxClicks = tdmeRequireColumn_(headers, 'Clicks');
+  const idxCost = tdmeRequireColumn_(headers, 'Cost');
+
+  const idxAvgBid = headers.indexOf('AvgEffectiveBid');
+  const idxAvgPosition = headers.indexOf('AvgImpressionPosition');
+  const idxAvgTraffic = headers.indexOf('AvgTrafficVolume');
+  const idxBounce = headers.indexOf('BounceRate');
+  const idxDepth = headers.indexOf('AvgPageviews');
+
+  const goalIndexes = {};
+
+  tdmeAllGoalIds_().forEach(goalId => {
+    goalIndexes[goalId] = tdmeFindGoalColumn_(headers, goalId);
+
+    if (goalIndexes[goalId] === -1) {
+      Logger.log('Не найден столбец цели в отчёте Директа: ' + goalId);
+    }
+  });
+
+  const result = [];
+
+  for (let i = headerIndex + 1; i < lines.length; i++) {
+    const row = lines[i].split('\t');
+    const campaignName = String(row[idxCampaign] || '').trim();
+
+    if (!campaignName) continue;
+
+    result.push({
+      campaignId: String(row[idxCampaignId] || '').trim(),
+      campaignName: campaignName,
+      campaignType: tdmeCampaignType_(campaignName),
+      geo: tdmeGeo_(campaignName),
+      impressions: tdmeToNumber_(row[idxImpressions]),
+      clicks: tdmeToNumber_(row[idxClicks]),
+      cost: tdmeToNumber_(row[idxCost]),
+
+      avgBid: idxAvgBid === -1 ? 0 : tdmeToNumber_(row[idxAvgBid]),
+      avgPosition: idxAvgPosition === -1 ? '' : tdmeMetric_(row[idxAvgPosition]),
+      avgTraffic: idxAvgTraffic === -1 ? '' : tdmeMetric_(row[idxAvgTraffic]),
+      bounce: idxBounce === -1 ? 0 : tdmeToNumber_(row[idxBounce]) / 100,
+      depth: idxDepth === -1 ? 0 : tdmeToNumber_(row[idxDepth]),
+
+      goals: {
+        view3Pages: tdmeGoalSum_(row, goalIndexes, TDME_GOALS.view3Pages),
+        callibriSpam: tdmeGoalSum_(row, goalIndexes, TDME_GOALS.callibriSpam),
+        callibriNonTarget: tdmeGoalSum_(row, goalIndexes, TDME_GOALS.callibriNonTarget),
+        addToCart: tdmeGoalSum_(row, goalIndexes, TDME_GOALS.addToCart),
+        purchase: tdmeGoalSum_(row, goalIndexes, TDME_GOALS.purchase),
+        jivo: tdmeGoalSum_(row, goalIndexes, TDME_GOALS.jivo),
+        callibriLeadA: tdmeGoalSum_(row, goalIndexes, TDME_GOALS.callibriLeadA),
+        callibriLeadB: 0,
+        callibriLeadC: tdmeGoalSum_(row, goalIndexes, TDME_GOALS.callibriLeadC)
+      }
+    });
+  }
 
   return result;
 }
 
-function VAG_ENO_V26_getMetrikaToken_() {
-  const props = PropertiesService.getScriptProperties();
-  return props.getProperty('METRIKA_TOKEN') || props.getProperty('YANDEX_TOKEN');
+function tdmeAllGoalIds_() {
+  let result = [];
+
+  Object.keys(TDME_GOALS).forEach(key => {
+    result = result.concat(TDME_GOALS[key] || []);
+  });
+
+  return Array.from(new Set(result.map(id => String(id))));
 }
 
-function VAG_ENO_V26_shortenWarning_(message) {
-  const text = String(message || '').replace(/\s+/g, ' ').trim();
-  if (text.length <= 260) return text;
-  return text.slice(0, 260) + '...';
+function tdmeFindGoalColumn_(headers, goalId) {
+  const id = String(goalId);
+
+  let index = headers.findIndex(header => {
+    return String(header).trim() === 'Conversions_' + id + '_AUTO';
+  });
+
+  if (index !== -1) return index;
+
+  index = headers.findIndex(header => {
+    return String(header).trim().indexOf('Conversions_' + id + '_') === 0;
+  });
+
+  if (index !== -1) return index;
+
+  return headers.findIndex(header => {
+    return String(header).indexOf(id) !== -1;
+  });
 }
 
-function VAG_ENO_V26_getGoalEntries_() {
-  return [
-    { key: 'bb60sec2pages', id: VAG_ENO_V26_CONFIG.GOALS.bb60sec2pages },
-    { key: 'phone8835', id: VAG_ENO_V26_CONFIG.GOALS.phone8835 },
-    { key: 'phone8865', id: VAG_ENO_V26_CONFIG.GOALS.phone8865 },
-    { key: 'max', id: VAG_ENO_V26_CONFIG.GOALS.max },
-    { key: 'telegramSlider', id: VAG_ENO_V26_CONFIG.GOALS.telegramSlider },
-    { key: 'route', id: VAG_ENO_V26_CONFIG.GOALS.route },
-    { key: 'uisCalls', id: VAG_ENO_V26_CONFIG.GOALS.uisCalls },
-    { key: 'uisUniqueCalls', id: VAG_ENO_V26_CONFIG.GOALS.uisUniqueCalls },
-    { key: 'uisLeads', id: VAG_ENO_V26_CONFIG.GOALS.uisLeads }
-  ];
-}
+function tdmeGoalSum_(row, goalIndexes, goalIds) {
+  return goalIds.reduce((sum, goalId) => {
+    const idx = goalIndexes[goalId];
 
-function VAG_ENO_V26_emptyGoals_() {
-  return {
-    bb60sec2pages: 0,
-    phone8835: 0,
-    phone8865: 0,
-    max: 0,
-    telegramSlider: 0,
-    route: 0,
-    uisCalls: 0,
-    uisUniqueCalls: 0,
-    uisLeads: 0
-  };
-}
+    if (idx === -1 || idx === undefined) return sum;
 
-function VAG_ENO_V26_cleanMetrikaCampaignName_(name) {
-  return String(name || '')
-    .replace(/\s*\(N-\d+\)\s*$/i, '')
-    .trim();
-}
-
-function VAG_ENO_V26_campaignMatchKey_(name) {
-  return VAG_ENO_V26_cleanMetrikaCampaignName_(name)
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-}
-
-function VAG_ENO_V26_toQueryString_(params) {
-  return Object.keys(params)
-    .map(key => encodeURIComponent(key) + '=' + encodeURIComponent(params[key]))
-    .join('&');
+    return sum + tdmeToNumber_(row[idx]);
+  }, 0);
 }
 
 // =====================
-// БЛОК ЕНО В ТАБЛИЦЕ
+// ШАБЛОН / БЛОК
 // =====================
 
-function VAG_ENO_V26_getOrCreateBlock_(sheet, title) {
-  const existingBlock = VAG_ENO_V26_findBlockByTitle_(sheet, title);
-  if (existingBlock) return existingBlock;
+function tdmeCopyPreviousReportBlock_(sheet, topRow, targetTitle) {
+  const sourceTopRow = tdmeFindPreviousReportTopRow_(sheet, topRow) || tdmeFindTemplateTopRow_(sheet);
+  const copyRows = tdmeReportRowsCount_(sheet, sourceTopRow);
+  const lastCol = sheet.getLastColumn();
 
-  const template = VAG_ENO_V26_getTemplateBlock_(sheet);
-  const newTopRow = VAG_ENO_V26_findLastFilledRowInColumnA_(sheet) + 4;
-  const lastColumn = sheet.getLastColumn();
-  const rowsToCopy = VAG_ENO_V26_CONFIG.TEMPLATE_COPY_ROWS;
-
-  if (sheet.getMaxRows() < newTopRow + rowsToCopy + 20) {
-    sheet.insertRowsAfter(sheet.getMaxRows(), newTopRow + rowsToCopy + 20 - sheet.getMaxRows());
+  if (sheet.getMaxRows() < topRow + copyRows + 20) {
+    sheet.insertRowsAfter(
+      sheet.getMaxRows(),
+      topRow + copyRows + 20 - sheet.getMaxRows()
+    );
   }
 
   sheet
-    .getRange(template.topRow, 1, rowsToCopy, lastColumn)
+    .getRange(sourceTopRow, 1, copyRows, lastCol)
     .copyTo(
-      sheet.getRange(newTopRow, 1, rowsToCopy, lastColumn),
+      sheet.getRange(topRow, 1, copyRows, lastCol),
       SpreadsheetApp.CopyPasteType.PASTE_NORMAL,
       false
     );
 
-  const headerRow = VAG_ENO_V26_findHeaderRow_(sheet, newTopRow);
-  const totalRow = VAG_ENO_V26_findTotalRow_(sheet, headerRow);
-
-  return { topRow: newTopRow, headerRow: headerRow, totalRow: totalRow };
+  sheet.getRange(topRow, 1).setValue(targetTitle);
 }
 
-function VAG_ENO_V26_getTemplateBlock_(sheet) {
-  const topRow = VAG_ENO_V26_CONFIG.TEMPLATE_TOP_ROW;
-  const headerRow = VAG_ENO_V26_findHeaderRow_(sheet, topRow);
-  const totalRow = VAG_ENO_V26_findTotalRow_(sheet, headerRow);
+function tdmeFindPreviousReportTopRow_(sheet, currentTopRow) {
+  const titles = tdmeFindAllReportTopRows_(sheet)
+    .filter(row => row < currentTopRow)
+    .sort((a, b) => b - a);
 
-  if (!headerRow || !totalRow) {
-    throw new Error('Не нашла шаблон ЕНО. Проверь строку ' + topRow + ', шапку с РК и строку ИТОГО.');
+  return titles.length ? titles[0] : 0;
+}
+
+function tdmeFindAllReportTopRows_(sheet) {
+  const lastRow = sheet.getLastRow();
+  const values = sheet.getRange(1, 1, lastRow, 1).getDisplayValues();
+  const result = [];
+
+  for (let i = 0; i < values.length; i++) {
+    const text = String(values[i][0] || '').trim();
+
+    if (tdmeNormalize_(text).indexOf('отчет недельный по рк') !== -1) {
+      result.push(i + 1);
+    }
   }
 
-  return { topRow: topRow, headerRow: headerRow, totalRow: totalRow };
+  return result;
 }
 
-function VAG_ENO_V26_findBlockByTitle_(sheet, title) {
+function tdmeReportRowsCount_(sheet, topRow) {
+  const reportRows = tdmeFindAllReportTopRows_(sheet).sort((a, b) => a - b);
+  const nextTop = reportRows.find(row => row > topRow);
+
+  if (nextTop) {
+    return Math.max(40, nextTop - topRow - 1);
+  }
+
+  // Если это последний отчёт, берём блок до конца комментария, но без огромного хвоста.
+  const headerRow = tdmeFindHeaderRow_(sheet, topRow);
+  const totalRow = tdmeFindTotalRow_(sheet, headerRow);
+  const commentRow = tdmeFindCommentRow_(sheet, totalRow) || totalRow + 3;
+  const endRow = Math.min(sheet.getLastRow(), commentRow + 55);
+
+  return Math.max(60, endRow - topRow + 1);
+}
+
+function tdmeFindTemplateTopRow_(sheet) {
+  const lastRow = sheet.getLastRow();
+  const values = sheet.getRange(1, 1, lastRow, 1).getDisplayValues();
+
+  for (let i = 0; i < values.length; i++) {
+    const text = String(values[i][0] || '');
+
+    if (
+      tdmeNormalize_(text).indexOf('отчет недельный по рк') !== -1 &&
+      text.indexOf(TDME_TEMPLATE_TITLE_PART) !== -1
+    ) {
+      return i + 1;
+    }
+  }
+
+  throw new Error('Не нашла шаблонный отчёт: ' + TDME_TEMPLATE_TITLE_PART);
+}
+
+function tdmeNextTopRow_(sheet, title) {
+  const existing = tdmeFindTitleRow_(sheet, title);
+
+  if (existing) {
+    return existing;
+  }
+
+  const firstCell = String(sheet.getRange(TDME_FIRST_REPORT_TOP_ROW, 1).getDisplayValue() || '').trim();
+
+  if (!firstCell) {
+    return TDME_FIRST_REPORT_TOP_ROW;
+  }
+
+  return tdmeLastFilledRowInColumnA_(sheet) + 2;
+}
+
+function tdmeFindTitleRow_(sheet, title) {
   const lastRow = sheet.getLastRow();
   const values = sheet.getRange(1, 1, lastRow, 1).getDisplayValues();
 
   for (let i = 0; i < values.length; i++) {
     if (String(values[i][0]).trim() === title) {
-      const topRow = i + 1;
-      const headerRow = VAG_ENO_V26_findHeaderRow_(sheet, topRow);
-      const totalRow = VAG_ENO_V26_findTotalRow_(sheet, headerRow);
-      return { topRow: topRow, headerRow: headerRow, totalRow: totalRow };
+      return i + 1;
     }
   }
 
-  return null;
+  return 0;
 }
 
-function VAG_ENO_V26_findHeaderRow_(sheet, startRow) {
-  const lastRow = sheet.getLastRow();
-  const maxRow = Math.min(lastRow, startRow + 50);
+function tdmeGetBlock_(sheet, topRow) {
+  const headerRow = tdmeFindHeaderRow_(sheet, topRow);
+  const totalRow = tdmeFindTotalRow_(sheet, headerRow);
 
-  for (let row = startRow; row <= maxRow; row++) {
-    const values = sheet.getRange(row, 1, 1, Math.min(sheet.getLastColumn(), 40)).getDisplayValues()[0];
-    const normalized = values.map(value => VAG_ENO_V26_normalize_(value));
+  return {
+    topRow: topRow,
+    headerRow: headerRow,
+    totalRow: totalRow
+  };
+}
 
-    const hasCampaign = normalized.indexOf('рк') !== -1;
+function tdmeFindHeaderRow_(sheet, topRow) {
+  const maxRow = Math.min(sheet.getLastRow(), topRow + 40);
+  const maxCol = sheet.getLastColumn();
+
+  for (let row = topRow; row <= maxRow; row++) {
+    const values = sheet.getRange(row, 1, 1, maxCol).getDisplayValues()[0];
+    const normalized = values.map(value => tdmeNormalize_(value));
+
+    const hasCampaign = normalized.some(value => value === 'рк');
     const hasImpressions = normalized.some(value => value.indexOf('показы') !== -1);
 
-    if (hasCampaign && hasImpressions) return row;
+    if (hasCampaign && hasImpressions) {
+      return row;
+    }
   }
 
-  return 0;
+  throw new Error('Не нашла шапку таблицы ЕНО.');
 }
 
-function VAG_ENO_V26_findTotalRow_(sheet, startRow) {
-  const lastRow = sheet.getLastRow();
-  const maxRow = Math.min(lastRow, startRow + 120);
 
-  for (let row = startRow + 1; row <= maxRow; row++) {
-    const values = sheet.getRange(row, 1, 1, Math.min(sheet.getLastColumn(), 10)).getDisplayValues()[0];
-    if (values.some(value => VAG_ENO_V26_normalize_(value) === 'итого')) return row;
+// Строка ИТОГО должна быть строго после последней строки кампаний.
+// Если после операций со строками метка съехала, возвращаем строку на место.
+function tdmeForceTotalRowAfterData_(sheet, header, dataEndRow, detectedTotalRow) {
+  const expectedTotalRow = dataEndRow + 1;
+
+  if (detectedTotalRow !== expectedTotalRow) {
+    Logger.log(
+      'ИТОГО было найдено на строке ' + detectedTotalRow +
+      ', но должно быть на строке ' + expectedTotalRow +
+      '. Используем строку после последней кампании.'
+    );
   }
 
-  return 0;
+  tdmeEnsureTotalLabel_(sheet, header, expectedTotalRow);
+
+  return expectedTotalRow;
 }
 
-function VAG_ENO_V26_findLastFilledRowInColumnA_(sheet) {
-  const lastRow = sheet.getLastRow();
-  const values = sheet.getRange(1, 1, lastRow, 1).getDisplayValues();
+function tdmeRemoveExtraUniqueCallColumn_(sheet, block) {
+  const headerRow = block.headerRow;
+  const totalRow = block.totalRow;
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(headerRow, 1, 1, lastCol).getDisplayValues()[0];
 
-  for (let i = values.length - 1; i >= 0; i--) {
-    if (String(values[i][0]).trim() !== '') return i + 1;
-  }
+  // Ищем именно лишний legacy-столбец "Уникальный звонок".
+  // Столбцы с историческими названиями не участвуют в расчёте фактических лидов.
+  const colsToDelete = [];
 
-  return VAG_ENO_V26_CONFIG.TEMPLATE_TOP_ROW + VAG_ENO_V26_CONFIG.TEMPLATE_COPY_ROWS;
+  headers.forEach((header, index) => {
+    const text = tdmeNormalize_(header);
+
+    if (text === 'уникальный звонок') {
+      colsToDelete.push(index + 1);
+    }
+  });
+
+  if (!colsToDelete.length) return;
+
+  // Удаляем справа налево, чтобы индексы не съезжали.
+  colsToDelete
+    .sort((a, b) => b - a)
+    .forEach(col => {
+      sheet
+        .getRange(block.topRow, col, totalRow - block.topRow + 1, 1)
+        .deleteCells(SpreadsheetApp.Dimension.COLUMNS);
+    });
 }
 
-function VAG_ENO_V26_fitRowsCount_(sheet, block, rowsCount) {
+function tdmeFitCampaignRows_(sheet, block, rowsCount) {
   const dataStartRow = block.headerRow + 1;
   const neededRows = Math.max(rowsCount, 1);
   let existingRows = block.totalRow - dataStartRow;
-  const lastColumn = sheet.getLastColumn();
+  const lastCol = sheet.getLastColumn();
 
   if (existingRows < neededRows) {
     const rowsToAdd = neededRows - existingRows;
+
     sheet.insertRowsBefore(block.totalRow, rowsToAdd);
+
+    // Копируем именно первую строку кампании: там должны быть формулы расчётных колонок и формат.
     sheet
-      .getRange(dataStartRow, 1, 1, lastColumn)
+      .getRange(dataStartRow, 1, 1, lastCol)
       .copyTo(
-        sheet.getRange(block.totalRow, 1, rowsToAdd, lastColumn),
+        sheet.getRange(block.totalRow, 1, rowsToAdd, lastCol),
         SpreadsheetApp.CopyPasteType.PASTE_NORMAL,
         false
       );
+
     block.totalRow += rowsToAdd;
     existingRows = neededRows;
   }
@@ -610,521 +1098,691 @@ function VAG_ENO_V26_fitRowsCount_(sheet, block, rowsCount) {
     sheet.deleteRows(dataStartRow + neededRows, rowsToDelete);
     block.totalRow -= rowsToDelete;
   }
+
+  return {
+    topRow: block.topRow,
+    headerRow: block.headerRow,
+    totalRow: block.totalRow
+  };
 }
 
-function VAG_ENO_V26_setTitle_(sheet, topRow, title) {
-  sheet.getRange(topRow, 1).setValue(title);
-}
+function tdmeLastFilledRowInColumnA_(sheet) {
+  const lastRow = sheet.getLastRow();
+  const values = sheet.getRange(1, 1, lastRow, 1).getDisplayValues();
 
-function VAG_ENO_V26_applyGoalHeaders_(sheet, headerRow) {
-  const idRow = headerRow - 1;
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (String(values[i][0]).trim() !== '') {
+      return i + 1;
+    }
+  }
 
-  sheet.getRange(idRow, 13).setValue(Number(VAG_ENO_V26_CONFIG.GOALS.bb60sec2pages));
-  sheet.getRange(idRow, 14).setValue(Number(VAG_ENO_V26_CONFIG.GOALS.phone8835));
-  sheet.getRange(idRow, 15).setValue(Number(VAG_ENO_V26_CONFIG.GOALS.phone8865));
-  sheet.getRange(idRow, 16).setValue(Number(VAG_ENO_V26_CONFIG.GOALS.max));
-  sheet.getRange(idRow, 17).setValue(Number(VAG_ENO_V26_CONFIG.GOALS.telegramSlider));
-  sheet.getRange(idRow, 18).setValue(Number(VAG_ENO_V26_CONFIG.GOALS.route));
-  sheet.getRange(idRow, 19).setValue(Number(VAG_ENO_V26_CONFIG.GOALS.uisCalls));
-  sheet.getRange(idRow, 20).setValue(Number(VAG_ENO_V26_CONFIG.GOALS.uisUniqueCalls));
-  sheet.getRange(idRow, 21).setValue(Number(VAG_ENO_V26_CONFIG.GOALS.uisLeads));
-
-  sheet.getRange(headerRow, 13).setValue('B-B_60сек+2стр (' + VAG_ENO_V26_CONFIG.GOALS.bb60sec2pages + ')');
-  sheet.getRange(headerRow, 14).setValue('Клик на 79110008835 (' + VAG_ENO_V26_CONFIG.GOALS.phone8835 + ')');
-  sheet.getRange(headerRow, 15).setValue('Клик на 79110008865 (' + VAG_ENO_V26_CONFIG.GOALS.phone8865 + ')');
-  sheet.getRange(headerRow, 16).setValue('Клик на Макс (' + VAG_ENO_V26_CONFIG.GOALS.max + ')');
-  sheet.getRange(headerRow, 17).setValue('Успешно пройден слайдер для перехода в TG (' + VAG_ENO_V26_CONFIG.GOALS.telegramSlider + ')');
-  sheet.getRange(headerRow, 18).setValue('Клик по кнопке "Маршрут" (' + VAG_ENO_V26_CONFIG.GOALS.route + ')');
-  sheet.getRange(headerRow, 19).setValue('Звонки Юис (' + VAG_ENO_V26_CONFIG.GOALS.uisCalls + ')');
-  sheet.getRange(headerRow, 20).setValue('Звонки_Уник - ЮИС (' + VAG_ENO_V26_CONFIG.GOALS.uisUniqueCalls + ')');
-  sheet.getRange(headerRow, 21).setValue('Заявки Юис (' + VAG_ENO_V26_CONFIG.GOALS.uisLeads + ')');
-  sheet.getRange(headerRow, 22).setValue('Факт сумма конверсий');
+  return TDME_FIRST_REPORT_TOP_ROW;
 }
 
 // =====================
-// КОЛОНКИ И ЗАПОЛНЕНИЕ
+// КОЛОНКИ / ЗАПОЛНЕНИЕ
 // =====================
 
-function VAG_ENO_V26_getHeaderMap_(sheet, headerRow) {
+function tdmeHeaderMap_(sheet, headerRow) {
   const headers = sheet.getRange(headerRow, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
   const map = {};
 
   headers.forEach((header, index) => {
-    const key = VAG_ENO_V26_normalize_(header);
-    if (key) map[key] = index + 1;
+    const key = tdmeNormalize_(header);
+
+    if (key) {
+      map[key] = index + 1;
+    }
   });
 
   return {
-    rk: VAG_ENO_V26_findExactCol_(map, 'рк'),
-    type: VAG_ENO_V26_findContainsCol_(map, ['тип рк']),
-    impressions: VAG_ENO_V26_findContainsCol_(map, ['показы']),
-    clicks: VAG_ENO_V26_findContainsCol_(map, ['клики']),
-    cost: VAG_ENO_V26_findCostCol_(map),
-    avgClickCost: VAG_ENO_V26_findContainsCol_(map, ['ср. ставка за клик', 'cpc']),
-    avgPosition: VAG_ENO_V26_findContainsCol_(map, ['ср. позиция показов']),
-    avgTraffic: VAG_ENO_V26_findContainsCol_(map, ['ср. объем трафика', 'ср. объём трафика']),
-    bounce: VAG_ENO_V26_findContainsCol_(map, ['отказы']),
-    depth: VAG_ENO_V26_findContainsCol_(map, ['глубина']),
-    bb60sec2pages: 13,
-    phone8835: 14,
-    phone8865: 15,
-    max: 16,
-    telegramSlider: 17,
-    route: 18,
-    uisCalls: 19,
-    uisUniqueCalls: 20,
-    uisLeads: 21,
-    factConversions: 22,
-    cr: 23,
-    cpa: 24
+    rk: tdmeExactCol_(map, 'рк'),
+    type: tdmeExactCol_(map, 'тип рк'),
+
+    impressions: tdmeContainsCol_(map, ['показы']),
+    clicks: tdmeContainsCol_(map, ['клики']),
+    cost: tdmeContainsCol_(map, ['расход c ндс', 'расход с ндс']),
+
+    avgBid: tdmeContainsCol_(map, ['ср. ставка за клик']),
+    avgPosition: tdmeContainsCol_(map, ['средняя позиция показа']),
+    avgTraffic: tdmeContainsCol_(map, ['средний объем трафика', 'средний объём трафика']),
+    bounce: tdmeContainsCol_(map, ['отказы']),
+    depth: tdmeContainsCol_(map, ['глубина']),
+
+    view3Pages: tdmeContainsCol_(map, ['просмотр 3х страниц']),
+    callibriSpam: tdmeContainsCol_(map, ['callibri: спам', 'callibri спам']),
+    callibriNonTarget: tdmeContainsCol_(map, ['callibri: нецелевой_лид', 'callibri нецелевой лид', 'callibri нецелевой_лид']),
+    addToCart: tdmeContainsCol_(map, ['ecommerce: добавление в корзину', 'ecommerce добавление в корзину']),
+    purchase: tdmeContainsCol_(map, ['ecommerce: покупка', 'ecommerce покупка']),
+    jivo: tdmeContainsCol_(map, ['jivo-чат', 'jivo чат', 'jivo']),
+    callibriLeadA: tdmeContainsCol_(map, ['callibri: лид_квал_a', 'callibri лид квал a', 'callibri лид_квал_a']),
+    callibriLeadB: tdmeContainsCol_(map, ['callibri: лид_квал_b', 'callibri лид квал b', 'callibri лид_квал_b']),
+    callibriLeadC: tdmeContainsCol_(map, ['callibri: лид_квал_c', 'callibri лид квал c', 'callibri лид_квал_c'])
   };
 }
 
-function VAG_ENO_V26_findExactCol_(map, header) {
-  return map[VAG_ENO_V26_normalize_(header)] || 0;
+function tdmeExactCol_(map, header) {
+  return map[tdmeNormalize_(header)] || 0;
 }
 
-function VAG_ENO_V26_findContainsCol_(map, parts) {
-  const normalizedParts = parts.map(part => VAG_ENO_V26_normalize_(part));
+function tdmeContainsCol_(map, parts) {
+  const normalizedParts = parts.map(part => tdmeNormalize_(part));
 
   for (const key in map) {
     for (let i = 0; i < normalizedParts.length; i++) {
-      if (key.indexOf(normalizedParts[i]) !== -1) return map[key];
+      if (key.indexOf(normalizedParts[i]) !== -1) {
+        return map[key];
+      }
     }
   }
 
   return 0;
 }
 
-function VAG_ENO_V26_findCostCol_(map) {
-  for (const key in map) {
-    if (key.indexOf('расход') !== -1 && key.indexOf('ндс') !== -1) return map[key];
+
+function tdmeLegacyEmailCol_(map) {
+  return map['email'] || 0;
+}
+
+function tdmeLegacyCallsCol_(map) {
+  return map['звонки'] || 0;
+}
+
+function tdmeApplyUpdatedGoalColumns_(sheet, headerRow, totalRow, header) {
+  const lastCol = sheet.getLastColumn();
+
+  // Новая схема целей: старые phone/email/messenger/legacy-трекеры не используются.
+  if (lastCol >= 23) {
+    sheet.getRange(headerRow, 16, 1, 8).setValues([[
+      'Callibri: Спам',
+      'Callibri: Нецелевой_Лид',
+      'Ecommerce: добавление в корзину',
+      'Ecommerce: покупка',
+      'Jivo-чат',
+      'Callibri: Лид_Квал_A',
+      'Callibri: Лид_Квал_C',
+      'Факт сумма конверсий'
+    ]]);
   }
+}
+
+function tdmeFixTopSummaryFormulas_(sheet, topRow, totalRow) {
+  const lastCol = sheet.getLastColumn();
+  const values = sheet.getRange(topRow, 1, 1, lastCol).getDisplayValues()[0];
+  const formulasByLabel = {
+    'расход': '=G' + totalRow,
+    'cpc': '=F' + totalRow,
+    'клики': '=D' + totalRow,
+    'cpa': '=O' + totalRow,
+    'кол-во лид': '=W' + totalRow,
+    'cpa лид': '=Y' + totalRow
+  };
+
+  Object.keys(formulasByLabel).forEach(label => {
+    const labelCol = tdmeFindTopSummaryLabelCol_(values, label);
+
+    if (!labelCol || labelCol >= lastCol) return;
+
+    sheet.getRange(topRow, labelCol + 1).setFormula(formulasByLabel[label]);
+  });
+
+  tdmeFixTopLeadSummaryBlock_(sheet, topRow, totalRow);
+}
+
+function tdmeFindTopSummaryLabelCol_(values, label) {
+  const target = tdmeNormalize_(label);
+
+  for (let i = 0; i < values.length; i++) {
+    if (tdmeNormalize_(values[i]) === target) {
+      return i + 1;
+    }
+  }
+
   return 0;
 }
 
-function VAG_ENO_V26_clearRawCells_(sheet, headerMap, startRow, rowsCount) {
-  const columns = [
-    headerMap.rk,
-    headerMap.type,
-    headerMap.impressions,
-    headerMap.clicks,
-    headerMap.cost,
-    headerMap.avgClickCost,
-    headerMap.avgPosition,
-    headerMap.avgTraffic,
-    headerMap.bounce,
-    headerMap.depth,
-    13, 14, 15, 16, 17, 18, 19, 20, 21
+function tdmeFixTopLeadSummaryBlock_(sheet, topRow, totalRow) {
+  const lastCol = sheet.getLastColumn();
+
+  if (lastCol < 27) return;
+
+  const oldNoteValues = sheet.getRange(topRow, 26, 1, Math.min(2, lastCol - 25))
+    .getDisplayValues()[0];
+  const note = oldNoteValues
+    .map(value => String(value || '').trim())
+    .filter(value => value)[0] || '';
+
+  // Верхняя зелёная строка должна идти так:
+  // Кол-во Лид -> W, CR -> X, CPA Лид -> Y, комментарий -> AA.
+  // Так мы не смешиваем новый столбец W "Факт сумма конверсий" с CR/CPA и заметкой.
+  sheet.getRange(topRow, 20, 1, 8).setValues([[
+    'Кол-во Лид',
+    '=W' + totalRow,
+    'CR',
+    '=X' + totalRow,
+    'CPA Лид',
+    '=Y' + totalRow,
+    '',
+    note
+  ]]);
+}
+
+function tdmeInputColumns_(header) {
+  return [
+    header.rk,
+    header.type,
+    header.impressions,
+    header.clicks,
+    header.cost,
+    header.avgBid,
+    header.avgPosition,
+    header.avgTraffic,
+    header.bounce,
+    header.depth,
+    header.view3Pages,
+    header.callibriSpam,
+    header.callibriNonTarget,
+    header.addToCart,
+    header.purchase,
+    header.jivo,
+    header.callibriLeadA,
+    header.callibriLeadB,
+    header.callibriLeadC
   ].filter(col => col > 0);
-
-  columns.forEach(col => sheet.getRange(startRow, col, rowsCount, 1).clearContent());
-
-  if (headerMap.bounce > 0) sheet.getRange(startRow, headerMap.bounce, rowsCount, 1).setNumberFormat('0.00%');
-  if (headerMap.depth > 0) sheet.getRange(startRow, headerMap.depth, rowsCount, 1).setNumberFormat('0.00');
-  if (headerMap.rk > 0) sheet.getRange(startRow, headerMap.rk, rowsCount, 1).setHorizontalAlignment('left');
 }
 
-function VAG_ENO_V26_fillCampaignRows_(sheet, headerMap, startRow, rows) {
-  rows.forEach((item, index) => {
-    const row = startRow + index;
+function tdmeClearDataInputCells_(sheet, header, startRow, rowsCount) {
+  if (!sheet || !header || !startRow || !rowsCount || rowsCount <= 0) {
+    Logger.log('[ENO] tdmeClearDataInputCells_: пустые параметры, очистка пропущена.');
+    return;
+  }
 
-    VAG_ENO_V26_setCell_(sheet, row, headerMap.rk, item.campaignName);
-    VAG_ENO_V26_setCell_(sheet, row, headerMap.type, item.campaignType);
-    VAG_ENO_V26_setCell_(sheet, row, headerMap.impressions, item.impressions);
-    VAG_ENO_V26_setCell_(sheet, row, headerMap.clicks, item.clicks);
-    VAG_ENO_V26_setCell_(sheet, row, headerMap.cost, item.cost);
-    VAG_ENO_V26_setCell_(sheet, row, headerMap.avgClickCost, item.avgEffectiveBid);
-    VAG_ENO_V26_setCell_(sheet, row, headerMap.avgPosition, item.avgPosition);
-    VAG_ENO_V26_setCell_(sheet, row, headerMap.avgTraffic, item.avgTraffic);
-    VAG_ENO_V26_setCell_(sheet, row, headerMap.bounce, item.bounceRate);
-    VAG_ENO_V26_setCell_(sheet, row, headerMap.depth, item.depth);
+  const columns = tdmeInputColumns_(header);
 
-    VAG_ENO_V26_setGoalCell_(sheet, row, 13, item.goals.bb60sec2pages);
-    VAG_ENO_V26_setGoalCell_(sheet, row, 14, item.goals.phone8835);
-    VAG_ENO_V26_setGoalCell_(sheet, row, 15, item.goals.phone8865);
-    VAG_ENO_V26_setGoalCell_(sheet, row, 16, item.goals.max);
-    VAG_ENO_V26_setGoalCell_(sheet, row, 17, item.goals.telegramSlider);
-    VAG_ENO_V26_setGoalCell_(sheet, row, 18, item.goals.route);
-    VAG_ENO_V26_setGoalCell_(sheet, row, 19, item.goals.uisCalls);
-    VAG_ENO_V26_setGoalCell_(sheet, row, 20, item.goals.uisUniqueCalls);
-    VAG_ENO_V26_setGoalCell_(sheet, row, 21, item.goals.uisLeads);
+  if (!columns.length) {
+    Logger.log('[ENO] tdmeClearDataInputCells_: нет колонок для очистки.');
+    return;
+  }
+
+  const ranges = columns.map(col => {
+    const letter = tdmeColumnLetter_(col);
+    return letter + startRow + ':' + letter + (startRow + rowsCount - 1);
+  });
+
+  sheet.getRangeList(ranges).clearContent();
+}
+
+function tdmeFillRows_(sheet, header, startRow, rows) {
+  if (!sheet || !header || !startRow) {
+    Logger.log('[ENO] tdmeFillRows_: пустые параметры, запись пропущена.');
+    return;
+  }
+
+  if (!rows || !rows.length) {
+    Logger.log('[ENO] tdmeFillRows_: rows пустой, запись строк кампаний пропущена.');
+    return;
+  }
+
+  const columnWriters = [
+    { col: header.rk, values: rows.map(item => item.campaignName) },
+    { col: header.type, values: rows.map(item => item.campaignType) },
+    { col: header.impressions, values: rows.map(item => item.impressions) },
+    { col: header.clicks, values: rows.map(item => item.clicks) },
+    { col: header.cost, values: rows.map(item => item.cost) },
+    { col: header.avgBid, values: rows.map(item => item.avgBid) },
+    { col: header.avgPosition, values: rows.map(item => item.avgPosition) },
+    { col: header.avgTraffic, values: rows.map(item => item.avgTraffic) },
+    { col: header.bounce, values: rows.map(item => item.bounce) },
+    { col: header.depth, values: rows.map(item => item.depth) },
+    { col: header.view3Pages, values: rows.map(item => tdmeGoalValue_((item.goals || {}).view3Pages)) },
+    { col: header.callibriSpam, values: rows.map(item => tdmeGoalValue_((item.goals || {}).callibriSpam)) },
+    { col: header.callibriNonTarget, values: rows.map(item => tdmeGoalValue_((item.goals || {}).callibriNonTarget)) },
+    { col: header.addToCart, values: rows.map(item => tdmeGoalValue_((item.goals || {}).addToCart)) },
+    { col: header.purchase, values: rows.map(item => tdmeGoalValue_((item.goals || {}).purchase)) },
+    { col: header.jivo, values: rows.map(item => tdmeGoalValue_((item.goals || {}).jivo)) },
+    { col: header.callibriLeadA, values: rows.map(item => tdmeGoalValue_((item.goals || {}).callibriLeadA)) },
+    { col: header.callibriLeadB, values: rows.map(item => tdmeGoalValue_((item.goals || {}).callibriLeadB)) },
+    { col: header.callibriLeadC, values: rows.map(item => tdmeGoalValue_((item.goals || {}).callibriLeadC)) }
+  ];
+
+  columnWriters.forEach(writer => {
+    if (!writer.col || writer.col <= 0) return;
+
+    const matrix = writer.values.map(value => [value]);
+    sheet.getRange(startRow, writer.col, matrix.length, 1).setValues(matrix);
   });
 }
 
-function VAG_ENO_V26_setFactFormulas_(sheet, headerMap, dataStartRow, totalRow) {
-  const dataEndRow = totalRow - 1;
-  if (dataEndRow < dataStartRow) return;
-
-  for (let row = dataStartRow; row <= dataEndRow; row++) {
-    sheet.getRange(row, 22).setFormula('=SUM(T' + row + ':U' + row + ')');
-    sheet.getRange(row, 23).setFormula('=IFERROR(V' + row + '/D' + row + ';0)');
-    sheet.getRange(row, 24).setFormula('=IFERROR(G' + row + '/V' + row + ';0)');
-  }
-
-  const sumCols = [3, 4, 7, 13, 18, 19, 20, 21, 22];
-  sumCols.forEach(col => {
-    const letter = VAG_ENO_V26_columnToLetter_(col);
-    sheet.getRange(totalRow, col).setFormula('=SUBTOTAL(9;' + letter + dataStartRow + ':' + letter + dataEndRow + ')');
-  });
-
-  sheet.getRange(totalRow, 5).setFormula('=IFERROR(D' + totalRow + '/C' + totalRow + ';0)');
-  sheet.getRange(totalRow, 6).setFormula('=IFERROR(G' + totalRow + '/D' + totalRow + ';0)');
-  sheet.getRange(totalRow, 9).setFormula('=AVERAGE(I' + dataStartRow + ':I' + dataEndRow + ')');
-  sheet.getRange(totalRow, 10).setFormula('=AVERAGE(J' + dataStartRow + ':J' + dataEndRow + ')');
-
-  if (headerMap.bounce > 0) {
-    const bounceLetter = VAG_ENO_V26_columnToLetter_(headerMap.bounce);
-    sheet.getRange(totalRow, headerMap.bounce)
-      .setFormula('=AVERAGE(' + bounceLetter + dataStartRow + ':' + bounceLetter + dataEndRow + ')')
-      .setNumberFormat('0.00%');
-  }
-
-  sheet.getRange(totalRow, 23).setFormula('=IFERROR(V' + totalRow + '/D' + totalRow + ';0)');
-  sheet.getRange(totalRow, 24).setFormula('=IFERROR(G' + totalRow + '/V' + totalRow + ';0)');
+function tdmeSetData_(sheet, row, col, value) {
+  if (col <= 0) return;
+  sheet.getRange(row, col).setValue(value);
 }
 
-function VAG_ENO_V26_setCell_(sheet, row, col, value) {
-  if (col > 0) sheet.getRange(row, col).setValue(value);
+function tdmeSetPlain_(sheet, row, col, value) {
+  if (col <= 0) return;
+  sheet.getRange(row, col).setValue(value);
 }
 
-function VAG_ENO_V26_setGoalCell_(sheet, row, col, value) {
-  if (col > 0) {
-    const number = Number(value || 0);
-    sheet.getRange(row, col).setValue(number > 0 ? number : '-');
+function tdmeEnsureTotalLabel_(sheet, header, totalRow) {
+  if (header.rk > 0) {
+    sheet.getRange(totalRow, header.rk).setValue('ИТОГО');
+  }
+
+  if (header.type > 0) {
+    sheet.getRange(totalRow, header.type).setValue('Итого');
   }
 }
 
-function VAG_ENO_V26_cleanFormattingAfterFill_(sheet, headerMap, startRow, rowsCount, rows) {
-  const lastCol = 24;
+function tdmeGoalValue_(value) {
+  const number = Number(value || 0);
+  return number > 0 ? number : '-';
+}
+
+function tdmeFormatBounceColumn_(sheet, header, startRow, rowsCount, totalRow) {
+  if (!header.bounce) return;
+
+  sheet.getRange(startRow, header.bounce, rowsCount, 1).setNumberFormat('0.00%');
+  sheet.getRange(totalRow, header.bounce).setNumberFormat('0.00%');
+}
+
+function tdmeHighlightGreenRows_(sheet, header, startRow, rowsCount, rows) {
+  if (!sheet || !header || !startRow || !rowsCount || rowsCount <= 0) {
+    Logger.log('[ENO] tdmeHighlightGreenRows_: пустые параметры, форматирование пропущено.');
+    return;
+  }
+
+  const lastCol = Math.max(
+    header.callibriLeadC,
+    header.callibriLeadB,
+    header.callibriLeadA,
+    header.jivo,
+    header.purchase,
+    header.addToCart,
+    header.callibriNonTarget,
+    header.callibriSpam,
+    header.view3Pages,
+    header.depth,
+    header.cost,
+    1
+  );
+
+  const backgrounds = [];
+  const fontWeights = [];
+
+  for (let i = 0; i < rowsCount; i++) {
+    const item = rows && rows[i] ? rows[i] : { goals: {} };
+    const goals = item.goals || {};
+
+    const targetActions =
+      Number(goals.addToCart || 0) +
+      Number(goals.purchase || 0) +
+      Number(goals.jivo || 0) +
+      Number(goals.callibriLeadA || 0) +
+      Number(goals.callibriLeadC || 0);
+
+    const background = targetActions > 0 ? '#d9ead3' : '#ffffff';
+
+    backgrounds.push(Array(lastCol).fill(background));
+    fontWeights.push(Array(lastCol).fill('normal'));
+  }
 
   sheet.getRange(startRow, 1, rowsCount, lastCol)
-    .setBackground('#ffffff')
-    .setFontWeight('normal');
-
-  if (headerMap.bounce > 0) sheet.getRange(startRow, headerMap.bounce, rowsCount, 1).setNumberFormat('0.00%');
-  if (headerMap.depth > 0) sheet.getRange(startRow, headerMap.depth, rowsCount, 1).setNumberFormat('0.00');
-  if (headerMap.rk > 0) sheet.getRange(startRow, headerMap.rk, rowsCount, 1).setHorizontalAlignment('left');
-
-  rows.forEach((item, index) => VAG_ENO_V26_highlightCampaignName_(sheet, headerMap, startRow + index, item));
-}
-
-function VAG_ENO_V26_highlightCampaignName_(sheet, headerMap, row, item) {
-  if (headerMap.rk <= 0) return;
-
-  const kpiConversions = Number(item.goals.uisUniqueCalls || 0) + Number(item.goals.uisLeads || 0);
-  const cost = Number(item.cost || 0);
-  const clicks = Number(item.clicks || 0);
-  let color = '#ffffff';
-
-  if (kpiConversions >= 1) {
-    const cpa = cost / kpiConversions;
-    if (cpa <= VAG_ENO_V26_CONFIG.GOOD_CPA_LIMIT) color = '#d9ead3';
-    else if (cpa <= VAG_ENO_V26_CONFIG.MIDDLE_CPA_LIMIT) color = '#fff2cc';
-    else color = '#f4cccc';
-  } else {
-    if (cost >= VAG_ENO_V26_CONFIG.RED_COST_LIMIT) color = '#f4cccc';
-    else if (cost >= VAG_ENO_V26_CONFIG.YELLOW_COST_LIMIT || clicks >= VAG_ENO_V26_CONFIG.YELLOW_CLICKS_LIMIT) color = '#fff2cc';
-  }
-
-  sheet.getRange(row, headerMap.rk)
-    .setBackground(color)
-    .setHorizontalAlignment('left')
-    .setFontWeight('normal');
+    .setBackgrounds(backgrounds)
+    .setFontWeights(fontWeights);
 }
 
 // =====================
-// КОММЕНТАРИЙ
+// КОММЕНТАРИИ
 // =====================
 
-function VAG_ENO_V26_buildComment_(rows, dateFrom, dateTo) {
-  const total = VAG_ENO_V26_getTotals_(rows);
-  const kpiConversions = total.goals.uisUniqueCalls + total.goals.uisLeads;
-  const cpa = kpiConversions > 0 ? total.cost / kpiConversions : 0;
-  const cr = total.clicks > 0 ? kpiConversions / total.clicks * 100 : 0;
-  const plan = VAG_ENO_V26_getPlan_(dateFrom, dateTo);
-  const budgetPercent = plan > 0 ? total.cost / plan * 100 : 0;
-  const byType = VAG_ENO_V26_groupByType_(rows);
+function tdmeBuildComments_(weekRows, monthRows, dateFrom, dateTo) {
+  const total = tdmeTotals_(weekRows);
+  const monthTotal = tdmeTotals_(monthRows);
 
-  const lines = [];
-  lines.push('Комментарии к отчёту за период с ' + VAG_ENO_V26_formatDateRu_(dateFrom) + ' по ' + VAG_ENO_V26_formatDateRu_(dateTo));
-  lines.push('');
-  lines.push('Бюджет:');
-  lines.push('Всего потрачено за неделю ' + VAG_ENO_V26_rub_(total.cost) + '. Идём по бюджету на ' + VAG_ENO_V26_percent_(budgetPercent) + ' от плана на период.');
-  lines.push('');
-  lines.push('Трафик:');
-  lines.push('Показы — ' + VAG_ENO_V26_num_(total.impressions));
-  lines.push('Клики — ' + VAG_ENO_V26_num_(total.clicks));
-  lines.push('Средний CPC — ' + VAG_ENO_V26_rub_(total.clicks > 0 ? total.cost / total.clicks : 0));
-  lines.push('');
-  lines.push('Достижения целей в Метрике:');
-  lines.push('KPI-конверсий получено — ' + kpiConversions + ', CPA — ' + VAG_ENO_V26_rub_(cpa) + ', CR — ' + VAG_ENO_V26_percent_(cr));
-  lines.push('B-B_60сек+2стр (555861179) — ' + total.goals.bb60sec2pages);
-  lines.push('Клик на 79110008835 (511787501) — ' + total.goals.phone8835);
-  lines.push('Клик на 79110008865 (511788019) — ' + total.goals.phone8865);
-  lines.push('Клик на Макс (511788150) — ' + total.goals.max);
-  lines.push('Успешно пройден слайдер для перехода в TG (511791937) — ' + total.goals.telegramSlider);
-  lines.push('Клик по кнопке "Маршрут" (547214611) — ' + total.goals.route);
-  lines.push('Звонки Юис (517626340) — ' + total.goals.uisCalls);
-  lines.push('Звонки_Уник - ЮИС (562354501) — ' + total.goals.uisUniqueCalls);
-  lines.push('Заявки Юис (517626592) — ' + total.goals.uisLeads);
-  lines.push('');
-  lines.push('По типам РК:');
+  // TDM 2026-07-06: бюджетный процент считаем как в ДБ — по плану месяца и рабочим дням.
+  const monthPlan = tdmeMonthPlanForDate_(dateTo);
+  const planToDate = tdmePlanToDate_(monthPlan, dateTo);
+  const budgetPercent = planToDate > 0 ? monthTotal.cost / planToDate * 100 : 0;
 
-  ['Поиск', 'Сети', 'Мастер', 'Товарная', 'Карты', 'Услуги', 'Поиск/Сети', 'н/а'].forEach(type => {
+  const byType = tdmeGroupByType_(weekRows);
+  const byGeo = tdmeGroupByGeo_(weekRows);
+
+  const rows = [];
+
+  rows.push(['Комментарии к отчёту за прошлую неделю с ' + tdmeShortDate_(dateFrom) + ' по ' + tdmeDateRu_(dateTo), '']);
+  rows.push(['', '']);
+
+  rows.push(['Бюджет:', '']);
+  rows.push([
+    'Всего потрачено за неделю ' + tdmeRub_(total.cost) +
+    '. По бюджету месяца на дату как в ДБ: план ' + tdmeRub_(planToDate) +
+    ', факт ' + tdmeRub_(monthTotal.cost) +
+    ', выполнение ' + tdmePercent_(budgetPercent),
+    ''
+  ]);
+  rows.push(['', '']);
+
+  rows.push(['Трафик:', '']);
+  rows.push(['Показы — ' + tdmeInt_(total.impressions), '']);
+  rows.push(['Клики — ' + tdmeInt_(total.clicks), '']);
+  rows.push(['Средний CPC — ' + tdmeRub_(total.clicks > 0 ? total.cost / total.clicks : 0), '']);
+  rows.push(['', '']);
+
+  rows.push(['Достигнуты цели:', '']);
+  rows.push(['Просмотр 3х страниц — ' + total.goals.view3Pages, '']);
+  rows.push(['Callibri: Спам — ' + total.goals.callibriSpam, '']);
+  rows.push(['Callibri: Нецелевой_Лид — ' + total.goals.callibriNonTarget, '']);
+  rows.push(['Ecommerce: добавление в корзину — ' + total.goals.addToCart, '']);
+  rows.push(['Ecommerce: покупка — ' + total.goals.purchase, '']);
+  rows.push(['Jivo-чат — ' + total.goals.jivo, '']);
+  rows.push(['Callibri: Лид_Квал_A — ' + total.goals.callibriLeadA, '']);
+  rows.push(['Callibri: Лид_Квал_C — ' + total.goals.callibriLeadC, '']);
+  rows.push(['Факт лидов — ' + tdmeTargetConversions_(total), '']);
+  rows.push(['', '']);
+
+  rows.push(['По ГЕО:', '']);
+  rows.push(['', '']);
+
+  ['Казахстан', 'Санкт-Петербург', 'РФ'].forEach(geo => {
+    const item = byGeo[geo];
+
+    if (!item) return;
+
+    const cpc = item.clicks > 0 ? item.cost / item.clicks : 0;
+
+    rows.push([geo, '']);
+    rows.push([
+      'Бюджет — ' +
+      tdmeRub_(item.cost) +
+      ', показы — ' +
+      tdmeInt_(item.impressions) +
+      ', клики — ' +
+      tdmeInt_(item.clicks) +
+      ', средний CPC — ' +
+      tdmeRub_(cpc) +
+      ', конверсии — ' +
+      tdmeInt_(tdmeTargetConversions_(item)) +
+      ', CPA — ' +
+      tdmeGeoCpa_(item),
+      ''
+    ]);
+    rows.push(['', '']);
+  });
+
+  rows.push(['По типам РК:', '']);
+
+  ['Поиск', 'Сети', 'Товарная', 'н/а'].forEach(type => {
     const item = byType[type];
+
     if (!item) return;
 
     const ctr = item.impressions > 0 ? item.clicks / item.impressions * 100 : 0;
     const cpc = item.clicks > 0 ? item.cost / item.clicks : 0;
-    const typeCr = item.clicks > 0 ? item.kpiConversions / item.clicks * 100 : 0;
-    const typeCpa = item.kpiConversions > 0 ? item.cost / item.kpiConversions : 0;
 
-    lines.push(
+    rows.push([
       type + ' — ' +
-      VAG_ENO_V26_num_(item.clicks) + ' кликов, расход ' +
-      VAG_ENO_V26_rub_(item.cost) + ', CTR — ' +
-      VAG_ENO_V26_percent_(ctr) + ', CPC — ' +
-      VAG_ENO_V26_rub_(cpc) + ', KPI-конверсий — ' +
-      item.kpiConversions + ', CR — ' +
-      VAG_ENO_V26_percent_(typeCr) + ', CPA — ' +
-      VAG_ENO_V26_rub_(typeCpa)
-    );
+      tdmeInt_(item.clicks) +
+      ' кликов, расход ' +
+      tdmeRub_(item.cost) +
+      ', CTR — ' +
+      tdmePercent_(ctr) +
+      ', CPC — ' +
+      tdmeRub_(cpc) +
+      ', Jivo-чат — ' +
+      item.goals.jivo +
+      ', Callibri A — ' +
+      item.goals.callibriLeadA +
+      ', Callibri C — ' +
+      item.goals.callibriLeadC,
+      ''
+    ]);
   });
 
-  lines.push('');
-  lines.push('Зона внимания:');
-  VAG_ENO_V26_buildAttentionLines_(rows, cpa).forEach(line => lines.push(line));
-  lines.push('');
-  lines.push('Вывод:');
-  lines.push('Усиливаем кампании, которые дают уникальные звонки и заявки. Кампании с расходом без KPI-конверсий проверяем по запросам, объявлениям, площадкам, отказам и посадочным страницам.');
+  rows.push(['', '']);
+  rows.push(['Вывод:', '']);
+  rows.push(['Зелёным выделены кампании, которые принесли целевые действия. Кампании с расходом без целевых действий проверяем по запросам, площадкам, объявлениям и посадочным страницам.', '']);
 
-  return lines.join('\n');
+  return rows;
 }
 
-function VAG_ENO_V26_prepareCommentArea_(sheet, block) {
-  const lastColumn = Math.min(sheet.getLastColumn(), 24); // A:X
-  const clearStartRow = block.totalRow + 2;
-  const copiedBlockEndRow = block.topRow + VAG_ENO_V26_CONFIG.TEMPLATE_COPY_ROWS - 1;
-  const clearEndRow = Math.max(copiedBlockEndRow, clearStartRow + 45);
+function tdmeFindCommentRow_(sheet, totalRow) {
+  if (!sheet || !totalRow) return 0;
 
-  if (sheet.getMaxRows() < clearEndRow + 5) {
-    sheet.insertRowsAfter(sheet.getMaxRows(), clearEndRow + 5 - sheet.getMaxRows());
+  const maxRow = Math.min(sheet.getLastRow(), totalRow + 80);
+  const rowsCount = Math.max(maxRow - totalRow, 0);
+
+  if (!rowsCount) return 0;
+
+  const values = sheet
+    .getRange(totalRow + 1, 1, rowsCount, 1)
+    .getDisplayValues();
+
+  for (let i = 0; i < values.length; i++) {
+    const text = tdmeNormalize_(values[i][0]);
+
+    if (text.indexOf('комментар') !== -1) {
+      return totalRow + 1 + i;
+    }
   }
 
-  sheet.getRange(clearStartRow, 1, clearEndRow - clearStartRow + 1, lastColumn)
+  return 0;
+}
+
+function tdmeWriteComments_(sheet, startRow, rows) {
+  sheet.getRange(startRow, 1, 80, 8)
     .clearContent()
-    .breakApart()
     .setBackground('#ffffff')
-    .setFontWeight('normal')
-    .setFontSize(10)
+    // В скопированном шаблоне шрифт бывает белым: явно возвращаем видимый текст.
     .setFontColor('#000000')
-    .setWrap(false)
-    .setBorder(false, false, false, false, false, false);
+    .setFontWeight('normal');
 
-  return clearStartRow;
-}
+  sheet.getRange(startRow, 1, rows.length, 2)
+    .setValues(rows)
+    .setWrap(true);
 
-function VAG_ENO_V26_writeComment_(sheet, startRow, comment) {
-  const lastColumn = Math.min(sheet.getLastColumn(), 24); // A:X
-  const rawLines = comment.split('\n').map(line => String(line).trim());
+  const boldTitles = [
+    'Бюджет:',
+    'Трафик:',
+    'Достигнуты цели:',
+    'По ГЕО:',
+    'Казахстан',
+    'Санкт-Петербург',
+    'РФ',
+    'По типам РК:',
+    'Вывод:'
+  ];
 
-  // Оставляем пустые строки между смысловыми блоками, но убираем пустой хвост.
-  while (rawLines.length && rawLines[rawLines.length - 1] === '') {
-    rawLines.pop();
-  }
+  rows.forEach((row, index) => {
+    const text = String(row[0] || '').trim();
 
-  if (!rawLines.length) return;
-
-  const neededRows = rawLines.length;
-  if (sheet.getMaxRows() < startRow + neededRows + 2) {
-    sheet.insertRowsAfter(sheet.getMaxRows(), startRow + neededRows + 2 - sheet.getMaxRows());
-  }
-
-  // Комментарий теперь пишется строго в колонку A.
-  // Объединений нет, поэтому ошибки с закрепленными/незакрепленными колонками не будет.
-  const fullRange = sheet.getRange(startRow, 1, neededRows, lastColumn);
-  fullRange
-    .clearContent()
-    .breakApart()
-    .setBackground('#ffffff')
-    .setFontWeight('normal')
-    .setFontSize(10)
-    .setFontColor('#000000')
-    .setWrap(true)
-    .setVerticalAlignment('middle')
-    .setHorizontalAlignment('left')
-    .setBorder(false, false, false, false, false, false);
-
-  const commentColumnRange = sheet.getRange(startRow, 1, neededRows, 1);
-  commentColumnRange
-    .setValues(rawLines.map(line => [line]))
-    .setWrap(true)
-    .setVerticalAlignment('middle')
-    .setHorizontalAlignment('left')
-    .setBorder(true, true, true, true, true, true, '#d9d9d9', SpreadsheetApp.BorderStyle.SOLID);
-
-  // Делаем колонку A достаточно широкой для читаемого комментария, но не уменьшаем текущую ширину.
-  const currentWidth = sheet.getColumnWidth(1);
-  if (currentWidth < 520) {
-    sheet.setColumnWidth(1, 520);
-  }
-
-  rawLines.forEach((line, index) => {
-    const row = startRow + index;
-    const cell = sheet.getRange(row, 1);
-    const normalizedLine = String(line || '').trim();
-
-    if (normalizedLine === '') {
-      cell
-        .setBackground('#ffffff')
-        .setBorder(false, false, false, false, false, false);
-      sheet.setRowHeight(row, 8);
-      return;
-    }
-
-    const isTitle = index === 0 || normalizedLine.indexOf('Комментарии к отчёту') === 0;
-    const isSectionHeader = normalizedLine.endsWith(':') || normalizedLine.indexOf('Вывод:') === 0;
-
-    if (isTitle) {
-      cell
-        .setBackground('#d9ead3')
+    if (index === 0 || boldTitles.indexOf(text) !== -1) {
+      sheet.getRange(startRow + index, 1)
         .setFontWeight('bold')
-        .setFontSize(11);
-      return;
+        .setFontSize(index === 0 ? 11 : 10);
     }
-
-    if (isSectionHeader) {
-      cell
-        .setBackground('#cfe2f3')
-        .setFontWeight('bold')
-        .setFontSize(10);
-      return;
-    }
-
-    cell
-      .setBackground('#ffffff')
-      .setFontWeight('normal')
-      .setFontSize(10);
-  });
-
-  sheet.autoResizeRows(startRow, neededRows);
-}
-
-function VAG_ENO_V26_buildAttentionLines_(rows, avgCpa) {
-  const noConversionCostLimit = Math.max(1000, Number(avgCpa || 0) * 0.5);
-
-  const risks = rows
-    .map(row => {
-      const conversions = Number(row.goals.uisUniqueCalls || 0) + Number(row.goals.uisLeads || 0);
-      const cpa = conversions > 0 ? Number(row.cost || 0) / conversions : 0;
-      return {
-        name: row.campaignName,
-        cost: Number(row.cost || 0),
-        clicks: Number(row.clicks || 0),
-        conversions: conversions,
-        cpa: cpa
-      };
-    })
-    .filter(item => {
-      const hasSpendNoConversions = item.cost >= noConversionCostLimit && item.conversions === 0;
-      const hasHighCpa = item.conversions > 0 && avgCpa > 0 && item.cpa > avgCpa * 1.5;
-      return hasSpendNoConversions || hasHighCpa;
-    })
-    .sort((a, b) => {
-      if (a.conversions === 0 && b.conversions > 0) return -1;
-      if (a.conversions > 0 && b.conversions === 0) return 1;
-      return b.cost - a.cost;
-    })
-    .slice(0, 5);
-
-  if (!risks.length) return ['Критичных кампаний с заметным расходом без KPI-конверсий не выявлено.'];
-
-  return risks.map(item => {
-    if (item.conversions === 0) {
-      return item.name + ' — расход ' + VAG_ENO_V26_rub_(item.cost) + ', KPI-конверсий нет. Проверить запросы, объявления, площадки и посадочную страницу.';
-    }
-    return item.name + ' — CPA ' + VAG_ENO_V26_rub_(item.cpa) + ', выше среднего по отчёту.';
   });
 }
 
-function VAG_ENO_V26_getTotals_(rows) {
-  const total = {
-    impressions: 0,
-    clicks: 0,
-    cost: 0,
-    goals: {
-      bb60sec2pages: 0,
-      phone8835: 0,
-      phone8865: 0,
-      max: 0,
-      telegramSlider: 0,
-      route: 0,
-      uisCalls: 0,
-      uisUniqueCalls: 0,
-      uisLeads: 0
-    }
-  };
+// =====================
+// АГРЕГАЦИЯ
+// =====================
+
+function tdmeTotals_(rows) {
+  const total = tdmeEmptyTotal_();
 
   rows.forEach(row => {
-    total.impressions += Number(row.impressions || 0);
-    total.clicks += Number(row.clicks || 0);
-    total.cost += Number(row.cost || 0);
-    total.goals.bb60sec2pages += Number(row.goals.bb60sec2pages || 0);
-    total.goals.phone8835 += Number(row.goals.phone8835 || 0);
-    total.goals.phone8865 += Number(row.goals.phone8865 || 0);
-    total.goals.max += Number(row.goals.max || 0);
-    total.goals.telegramSlider += Number(row.goals.telegramSlider || 0);
-    total.goals.route += Number(row.goals.route || 0);
-    total.goals.uisCalls += Number(row.goals.uisCalls || 0);
-    total.goals.uisUniqueCalls += Number(row.goals.uisUniqueCalls || 0);
-    total.goals.uisLeads += Number(row.goals.uisLeads || 0);
+    tdmeAddToTotal_(total, row);
   });
 
   return total;
 }
 
-function VAG_ENO_V26_groupByType_(rows) {
+function tdmeGroupByType_(rows) {
   const result = {};
 
   rows.forEach(row => {
     const type = row.campaignType || 'н/а';
+
     if (!result[type]) {
-      result[type] = { impressions: 0, clicks: 0, cost: 0, kpiConversions: 0 };
+      result[type] = tdmeEmptyTotal_();
     }
-    result[type].impressions += Number(row.impressions || 0);
-    result[type].clicks += Number(row.clicks || 0);
-    result[type].cost += Number(row.cost || 0);
-    result[type].kpiConversions += Number(row.goals.uisUniqueCalls || 0) + Number(row.goals.uisLeads || 0);
+
+    tdmeAddToTotal_(result[type], row);
   });
 
   return result;
 }
 
-// =====================
-// ДАТЫ И ФОРМАТЫ
-// =====================
+function tdmeGroupByGeo_(rows) {
+  const result = {};
 
-function VAG_ENO_V26_getCurrentWeekPeriod_() {
-  const today = VAG_ENO_V26_parseApiDate_(Utilities.formatDate(new Date(), VAG_ENO_V26_CONFIG.TIMEZONE, 'yyyy-MM-dd'));
-  const day = today.getDay();
-  const diffToMonday = day === 0 ? 6 : day - 1;
-  const monday = new Date(today);
-  monday.setDate(today.getDate() - diffToMonday);
+  rows.forEach(row => {
+    const geo = row.geo || 'РФ';
 
+    if (!result[geo]) {
+      result[geo] = tdmeEmptyTotal_();
+    }
+
+    tdmeAddToTotal_(result[geo], row);
+  });
+
+  return result;
+}
+
+function tdmeGeo_(campaignName) {
+  const name = String(campaignName || '').toLowerCase();
+
+  if (
+    name.indexOf('kaz') !== -1 ||
+    name.indexOf('_kz') !== -1 ||
+    name.indexOf('kz') !== -1 ||
+    name.indexOf('каз') !== -1
+  ) {
+    return 'Казахстан';
+  }
+
+  if (
+    name.indexOf('spb') !== -1 ||
+    name.indexOf('_spb') !== -1 ||
+    name.indexOf('спб') !== -1 ||
+    name.indexOf('санкт') !== -1
+  ) {
+    return 'Санкт-Петербург';
+  }
+
+  return 'РФ';
+}
+
+function tdmeAddToTotal_(target, row) {
+  target.impressions += row.impressions;
+  target.clicks += row.clicks;
+  target.cost += row.cost;
+
+  target.goals.view3Pages += row.goals.view3Pages;
+  target.goals.callibriSpam += row.goals.callibriSpam;
+  target.goals.callibriNonTarget += row.goals.callibriNonTarget;
+  target.goals.addToCart += row.goals.addToCart;
+  target.goals.purchase += row.goals.purchase;
+  target.goals.jivo += row.goals.jivo;
+  target.goals.callibriLeadA += row.goals.callibriLeadA;
+  target.goals.callibriLeadB += Number(row.goals.callibriLeadB || 0);
+  target.goals.callibriLeadC += row.goals.callibriLeadC;
+}
+
+function tdmeEmptyTotal_() {
   return {
-    dateFrom: Utilities.formatDate(monday, VAG_ENO_V26_CONFIG.TIMEZONE, 'yyyy-MM-dd'),
-    dateTo: Utilities.formatDate(today, VAG_ENO_V26_CONFIG.TIMEZONE, 'yyyy-MM-dd')
+    impressions: 0,
+    clicks: 0,
+    cost: 0,
+    goals: {
+      view3Pages: 0,
+      callibriSpam: 0,
+      callibriNonTarget: 0,
+      addToCart: 0,
+      purchase: 0,
+      jivo: 0,
+      callibriLeadA: 0,
+      callibriLeadB: 0,
+      callibriLeadC: 0
+    }
   };
 }
 
-function VAG_ENO_V26_getPreviousFullWeekPeriod_() {
-  const today = VAG_ENO_V26_parseApiDate_(Utilities.formatDate(new Date(), VAG_ENO_V26_CONFIG.TIMEZONE, 'yyyy-MM-dd'));
-  const day = today.getDay();
+function tdmeTargetConversions_(item) {
+  if (!item || !item.goals) return 0;
+
+  // Факт лидов: Ecommerce purchase + Jivo + Callibri A + Callibri C.
+  // Спам и нецелевые в факт не включаем.
+  return Number(item.goals.purchase || 0) +
+    Number(item.goals.jivo || 0) +
+    Number(item.goals.callibriLeadA || 0) +
+    Number(item.goals.callibriLeadC || 0);
+}
+
+function tdmeGeoCpa_(item) {
+  const conversions = tdmeTargetConversions_(item);
+
+  if (!conversions) {
+    return '-';
+  }
+
+  return tdmeRub_(Number(item.cost || 0) / conversions);
+}
+
+
+// =====================
+// ТИП РК
+// =====================
+
+function tdmeCampaignType_(campaignName) {
+  const name = String(campaignName || '').toLowerCase();
+
+  if (
+    name.indexOf('_s_') !== -1 ||
+    name.indexOf('rsya') !== -1 ||
+    name.indexOf('рся') !== -1 ||
+    name.indexOf('set') !== -1 ||
+    name.indexOf('smart') !== -1
+  ) {
+    return 'Сети';
+  }
+
+  if (
+    name.indexOf('tovar') !== -1 ||
+    name.indexOf('товар') !== -1 ||
+    name.indexOf('tk') !== -1
+  ) {
+    return 'Товарная';
+  }
+
+  if (
+    name.indexOf('_p_') !== -1 ||
+    name.indexOf('search') !== -1 ||
+    name.indexOf('poisk') !== -1 ||
+    name.indexOf('поиск') !== -1 ||
+    name.indexOf('categ_t-g') !== -1 ||
+    name.indexOf('dsa') !== -1
+  ) {
+    return 'Поиск';
+  }
+
+  return 'н/а';
+}
+
+// =====================
+// ДАТЫ / ФОРМАТЫ
+// =====================
+
+function tdmePreviousFullWeek_() {
+  const now = new Date();
+  const today = Utilities.formatDate(now, TDME_TIMEZONE, 'yyyy-MM-dd');
+  const todayDate = tdmeParseDate_(today);
+
+  const day = todayDate.getDay();
   const diffToMonday = day === 0 ? 6 : day - 1;
 
-  const currentMonday = new Date(today);
-  currentMonday.setDate(today.getDate() - diffToMonday);
+  const currentMonday = new Date(todayDate);
+  currentMonday.setDate(todayDate.getDate() - diffToMonday);
 
   const previousMonday = new Date(currentMonday);
   previousMonday.setDate(currentMonday.getDate() - 7);
@@ -1133,80 +1791,112 @@ function VAG_ENO_V26_getPreviousFullWeekPeriod_() {
   previousSunday.setDate(currentMonday.getDate() - 1);
 
   return {
-    dateFrom: Utilities.formatDate(previousMonday, VAG_ENO_V26_CONFIG.TIMEZONE, 'yyyy-MM-dd'),
-    dateTo: Utilities.formatDate(previousSunday, VAG_ENO_V26_CONFIG.TIMEZONE, 'yyyy-MM-dd')
+    dateFrom: Utilities.formatDate(previousMonday, TDME_TIMEZONE, 'yyyy-MM-dd'),
+    dateTo: Utilities.formatDate(previousSunday, TDME_TIMEZONE, 'yyyy-MM-dd')
   };
 }
 
-function VAG_ENO_V26_buildTitle_(dateFrom, dateTo) {
-  return 'Отчет за неделю ' + VAG_ENO_V26_shortDate_(dateFrom) + ' - ' + VAG_ENO_V26_shortDate_(dateTo);
+function tdmeTitle_(dateFrom, dateTo) {
+  return 'Отчет недельный по РК  ' + tdmeDateRu_(dateFrom) + ' - ' + tdmeDateRu_(dateTo);
 }
 
-function VAG_ENO_V26_shortDate_(apiDate) {
-  const parts = apiDate.split('-');
-  return parts[2] + '.' + parts[1];
+function tdmeMonthStart_(apiDate) {
+  const date = tdmeParseDate_(apiDate);
+
+  return Utilities.formatDate(
+    new Date(date.getFullYear(), date.getMonth(), 1),
+    TDME_TIMEZONE,
+    'yyyy-MM-dd'
+  );
 }
 
-function VAG_ENO_V26_formatDateRu_(apiDate) {
-  const parts = apiDate.split('-');
-  return parts[2] + '.' + parts[1] + '.';
+function tdmePlanToDate_(monthPlan, dateTo) {
+  // TDM 2026-07-06: как в ДБ — план на дату считается по рабочим дням месяца.
+  const date = tdmeParseDate_(dateTo);
+  const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
+  const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+  const workingDays = tdmeWorkingDaysBetween_(firstDay, lastDay);
+  const passedWorkingDays = tdmeWorkingDaysBetween_(firstDay, date);
+
+  if (!workingDays) return 0;
+  return monthPlan / workingDays * passedWorkingDays;
 }
 
-function VAG_ENO_V26_parseApiDate_(apiDate) {
+function tdmeMonthPlanForDate_(apiDate) {
+  // Июль 2026 в ДБ: 280 000 ₽ с НДС. Старые месяцы оставляем на базовом плане ЕНО.
+  if (String(apiDate) >= '2026-07-01') return 280000;
+  return TDME_MONTH_PLAN;
+}
+
+function tdmeWorkingDaysBetween_(dateFrom, dateTo) {
+  let count = 0;
+  const current = new Date(dateFrom);
+  const end = new Date(dateTo);
+
+  while (current <= end) {
+    const day = current.getDay();
+    if (day !== 0 && day !== 6) count++;
+    current.setDate(current.getDate() + 1);
+  }
+
+  return count;
+}
+
+function tdmeParseDate_(apiDate) {
   const parts = String(apiDate).split('-').map(Number);
   return new Date(parts[0], parts[1] - 1, parts[2]);
 }
 
-function VAG_ENO_V26_getPlan_(dateFrom, dateTo) {
-  const start = VAG_ENO_V26_parseApiDate_(dateFrom);
-  const end = VAG_ENO_V26_parseApiDate_(dateTo);
-  const days = Math.round((end - start) / (24 * 60 * 60 * 1000)) + 1;
-  const daysInMonth = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
-  return VAG_ENO_V26_CONFIG.MONTH_BUDGET / daysInMonth * days;
+function tdmeShortDate_(apiDate) {
+  const parts = String(apiDate).split('-');
+  return parts[2] + '.' + parts[1] + '.';
 }
 
-function VAG_ENO_V26_getCampaignType_(campaignName) {
-  const name = String(campaignName || '').toLowerCase();
-
-  if (name.includes('m-k') || name.includes('мастер')) return 'Мастер';
-  if (name.includes('карт')) return 'Карты';
-  if (name.includes('услуг') || name.includes('galereya')) return 'Услуги';
-  if (name.includes('сет') || name.includes('_s_') || name.includes('rsya') || name.includes('рся')) return 'Сети';
-  if (name.includes('товар')) return 'Товарная';
-  if (name.includes('поиск') || name.includes('_p_') || name.includes('brand')) return 'Поиск';
-
-  return 'н/а';
+function tdmeDateRu_(apiDate) {
+  const parts = String(apiDate).split('-');
+  return parts[2] + '.' + parts[1] + '.' + parts[0];
 }
 
-function VAG_ENO_V26_toNumber_(value) {
-  if (value === null || value === undefined || value === '' || value === '-' || value === '--') return 0;
-  const text = String(value).replace(/\s/g, '').replace(',', '.').replace(/[^\d.-]/g, '');
+function tdmeMetric_(value) {
+  const text = String(value || '').trim();
+
+  if (!text || text === '-' || text === '--') return '-';
+
+  return tdmeToNumber_(text);
+}
+
+function tdmeToNumber_(value) {
+  if (value === null || value === undefined) return 0;
+
+  const text = String(value)
+    .replace(/\s/g, '')
+    .replace(',', '.')
+    .replace(/[^\d.-]/g, '');
+
   const number = Number(text);
+
   return isNaN(number) ? 0 : number;
 }
 
-function VAG_ENO_V26_toRate_(value) {
-  const number = VAG_ENO_V26_toNumber_(value);
-  if (!number) return 0;
-
-  // В отчёте Директа BounceRate приходит как процентное число: 26.92.
-  // В Google Sheets при формате 0.00% нужно записывать долю: 0.2692.
-  return number > 1 ? number / 100 : number;
+function tdmeRub_(value) {
+  return Number(value || 0).toLocaleString('ru-RU', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }) + ' руб.';
 }
 
-function VAG_ENO_V26_rub_(value) {
-  return Number(value || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' руб.';
-}
-
-function VAG_ENO_V26_num_(value) {
+function tdmeInt_(value) {
   return Number(value || 0).toLocaleString('ru-RU');
 }
 
-function VAG_ENO_V26_percent_(value) {
-  return Number(value || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+function tdmePercent_(value) {
+  return Number(value || 0).toLocaleString('ru-RU', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }) + '%';
 }
 
-function VAG_ENO_V26_normalize_(value) {
+function tdmeNormalize_(value) {
   return String(value || '')
     .toLowerCase()
     .replace(/ё/g, 'е')
@@ -1215,15 +1905,482 @@ function VAG_ENO_V26_normalize_(value) {
     .trim();
 }
 
-function VAG_ENO_V26_columnToLetter_(column) {
-  let temp = '';
-  let letter = '';
+function tdmeRequireColumn_(headers, columnName) {
+  const index = headers.indexOf(columnName);
 
-  while (column > 0) {
-    temp = (column - 1) % 26;
-    letter = String.fromCharCode(temp + 65) + letter;
-    column = (column - temp - 1) / 26;
+  if (index === -1) {
+    throw new Error('Не найден столбец "' + columnName + '". Заголовки: ' + headers.join(' | '));
   }
 
-  return letter;
+  return index;
+}
+
+
+// =====================
+// ВАЛИДАЦИЯ ЕНО ПОСЛЕ СБОРКИ
+// =====================
+
+function tdmeValidateReportBlock_(sheet, block, dataStartRow, dataEndRow, title) {
+  const lastCol = sheet.getLastColumn();
+
+  if (!block || !block.headerRow || !block.totalRow) {
+    throw new Error('Проверка ЕНО: не найден блок отчёта для ' + title);
+  }
+
+  if (block.totalRow <= dataEndRow) {
+    throw new Error(
+      'Проверка ЕНО: строка ИТОГО стоит раньше конца данных. ' +
+      'ИТОГО: ' + block.totalRow + ', последняя строка кампаний: ' + dataEndRow
+    );
+  }
+
+  const dataValues = sheet
+    .getRange(dataStartRow, 1, Math.max(dataEndRow - dataStartRow + 1, 1), lastCol)
+    .getDisplayValues();
+
+  for (let r = 0; r < dataValues.length; r++) {
+    const hasTotalInData = dataValues[r].some(value => tdmeNormalize_(value) === 'итого');
+
+    if (hasTotalInData) {
+      throw new Error('Проверка ЕНО: слово ИТОГО попало в строку кампании ' + (dataStartRow + r));
+    }
+  }
+
+  const totalValues = sheet.getRange(block.totalRow, 1, 1, lastCol).getDisplayValues()[0];
+  const hasTotal = totalValues.some(value => tdmeNormalize_(value) === 'итого');
+
+  if (!hasTotal) {
+    // Самовосстановление: если после копирования метка исчезла, возвращаем её в строку ИТОГО.
+    const header = tdmeHeaderMap_(sheet, block.headerRow);
+    tdmeEnsureTotalLabel_(sheet, header, block.totalRow);
+
+    const recheckValues = sheet.getRange(block.totalRow, 1, 1, lastCol).getDisplayValues()[0];
+    const recheckHasTotal = recheckValues.some(value => tdmeNormalize_(value) === 'итого');
+
+    if (!recheckHasTotal) {
+      const firstCell = sheet.getRange(block.totalRow, 1);
+      if (!firstCell.getFormula()) {
+        firstCell.setValue('ИТОГО');
+      }
+
+      const finalValues = sheet.getRange(block.totalRow, 1, 1, lastCol).getDisplayValues()[0];
+      const finalHasTotal = finalValues.some(value => tdmeNormalize_(value) === 'итого');
+
+      if (!finalHasTotal) {
+        throw new Error('Проверка ЕНО: в строке ' + block.totalRow + ' нет метки ИТОГО.');
+      }
+    }
+  }
+
+  const formulas = sheet.getRange(block.totalRow, 1, 1, lastCol).getFormulas()[0];
+
+  formulas.forEach((formula, index) => {
+    if (!formula) return;
+
+    const ranges = String(formula).match(/(\$?[A-Z]{1,3})(\$?\d+):(\$?[A-Z]{1,3})(\$?\d+)/g) || [];
+
+    ranges.forEach(rangeText => {
+      const match = rangeText.match(/(\$?[A-Z]{1,3})(\$?\d+):(\$?[A-Z]{1,3})(\$?\d+)/);
+      if (!match) return;
+
+      const col1 = match[1].replace(/\$/g, '');
+      const col2 = match[3].replace(/\$/g, '');
+      const row1 = Number(match[2].replace(/\$/g, ''));
+      const row2 = Number(match[4].replace(/\$/g, ''));
+
+      if (col1 === col2 && row1 === dataStartRow && row2 !== dataEndRow) {
+        throw new Error(
+          'Проверка ЕНО: формула в строке ИТОГО, колонка ' + (index + 1) +
+          ' тянется до ' + row2 + ', а должна до ' + dataEndRow +
+          '. Формула: ' + formula
+        );
+      }
+    });
+  });
+
+  Logger.log('Проверка ЕНО пройдена: ' + title);
+}
+
+function tdmeNotifyError_(title, error) {
+  const message =
+    title + '\n\n' +
+    'Ошибка: ' + (error && error.message ? error.message : error) + '\n\n' +
+    'Stack:\n' + (error && error.stack ? error.stack : '');
+
+  Logger.log(message);
+
+  try {
+    const email = TDME_NOTIFY_EMAIL || Session.getActiveUser().getEmail();
+
+    if (email) {
+      MailApp.sendEmail({
+        to: email,
+        subject: 'Ошибка ЕНО — ТДМ',
+        body: message
+      });
+    }
+  } catch (mailError) {
+    Logger.log('Не удалось отправить письмо об ошибке ЕНО: ' + mailError.message);
+  }
+}
+
+// =====================
+// ТЕСТ ДОСТУПА К ДИРЕКТУ
+// =====================
+
+function testTdmDirectManageAccess() {
+  const clientLogin = TDME_CLIENT_LOGIN;
+
+  let token = PropertiesService.getScriptProperties().getProperty('YANDEX_TOKEN');
+
+  if (!token) {
+    throw new Error('Не найден YANDEX_TOKEN в Script Properties.');
+  }
+
+  token = String(token)
+    .replace(/^OAuth\s+/i, '')
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+
+  const url = 'https://api.direct.yandex.com/json/v5/campaigns';
+
+  const body = {
+    method: 'get',
+    params: {
+      SelectionCriteria: {},
+      FieldNames: [
+        'Id',
+        'Name',
+        'State',
+        'Status'
+      ]
+    }
+  };
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(body),
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'Client-Login': clientLogin,
+      'Accept-Language': 'ru'
+    },
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch(url, options);
+  const code = response.getResponseCode();
+  const text = response.getContentText();
+
+  Logger.log('Код ответа: ' + code);
+  Logger.log(text);
+
+  if (code !== 200) {
+    throw new Error('Тест доступа не прошёл. Код: ' + code + '\n' + text);
+  }
+
+  const data = JSON.parse(text);
+  const campaigns = data.result && data.result.Campaigns ? data.result.Campaigns : [];
+
+  Logger.log('Кампаний получено: ' + campaigns.length);
+
+  SpreadsheetApp.getUi().alert(
+    'Тест прошёл. Токен видит кампании через API. Кампаний найдено: ' + campaigns.length
+  );
+}
+
+
+// =====================
+// ИТОГО — безопасное исправление диапазонов формул
+// =====================
+
+/**
+ * Исправляет диапазоны формул в строке ИТОГО под фактические строки кампаний.
+ * Пример:
+ * =ПРОМЕЖУТОЧНЫЕ.ИТОГИ(9;C594:C611)
+ * станет:
+ * =ПРОМЕЖУТОЧНЫЕ.ИТОГИ(9;C594:C614)
+ */
+function tdmeFixTotalRowFormulaRanges_(sheet, totalRow, dataStartRow, dataEndRow) {
+  const lastCol = sheet.getLastColumn();
+  const range = sheet.getRange(totalRow, 1, 1, lastCol);
+  let formulas = range.getFormulas()[0];
+
+  if (!formulas.some(function(formula) { return Boolean(formula); })) {
+    let templateFormulas = null;
+    const firstRow = Math.max(1, totalRow - 250);
+
+    for (let row = totalRow - 1; row >= firstRow; row--) {
+      const values = sheet.getRange(row, 1, 1, lastCol).getDisplayValues()[0];
+      const hasTotal = values.some(function(value) {
+        return tdmeNormalizeForTotalSearch_(value) === 'итого';
+      });
+      if (!hasTotal) continue;
+
+      const candidate = sheet.getRange(row, 1, 1, lastCol).getFormulas()[0];
+      if (candidate.some(function(formula) { return Boolean(formula); })) {
+        templateFormulas = candidate;
+        break;
+      }
+    }
+
+    if (!templateFormulas) {
+      throw new Error('ЕНО: не удалось восстановить формулы строки ИТОГО ' + totalRow + ' — выше не найден шаблон с формулами.');
+    }
+
+    formulas = templateFormulas;
+  }
+
+  const fixed = formulas.map(function(formula) {
+    if (!formula) return formula;
+    return tdmeFixFormulaRangesToCurrentBlock_(formula, dataStartRow, dataEndRow);
+  });
+
+  range.setFormulas([fixed]);
+
+  const verified = range.getFormulas()[0];
+  if (!verified.some(function(formula) { return Boolean(formula); })) {
+    throw new Error('ЕНО: формулы строки ИТОГО не восстановились после записи, строка ' + totalRow + '.');
+  }
+}
+
+/**
+ * Меняет только диапазоны в одной колонке:
+ * C594:C611 -> C594:C614.
+ * Формулы вида G615/D615 не трогаем.
+ */
+function tdmeFixFormulaRangesToCurrentBlock_(formula, dataStartRow, dataEndRow) {
+  return String(formula).replace(
+    /(\$?[A-Z]{1,3})(\$?\d+):(\$?[A-Z]{1,3})(\$?\d+)/g,
+    function(match, col1, row1, col2, row2) {
+      const cleanCol1 = col1.replace(/\$/g, '');
+      const cleanCol2 = col2.replace(/\$/g, '');
+
+      // Не трогаем диапазоны через несколько колонок.
+      if (cleanCol1 !== cleanCol2) return match;
+
+      const newRow1 = row1.indexOf('$') === 0 ? '$' + dataStartRow : String(dataStartRow);
+      const newRow2 = row2.indexOf('$') === 0 ? '$' + dataEndRow : String(dataEndRow);
+
+      return col1 + newRow1 + ':' + col2 + newRow2;
+    }
+  );
+}
+// =====================
+// ЕНО — безопасный поиск строки ИТОГО
+// Встроено в основной код v20
+// =====================
+//
+// Что исправляет:
+// - ищет строку ИТОГО не только по первой колонке, а по всей строке;
+// - если слово "ИТОГО" не найдено, ищет строку перед блоком комментариев;
+// - добавляет подробную диагностику, если строка всё равно не найдена;
+// - формулы и значения не перезаписывает.
+
+function tdmeFindTotalRow_(sheet, headerRow) {
+  if (!sheet || !headerRow) {
+    throw new Error('tdmeFindTotalRow_: не передан sheet/headerRow.');
+  }
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const maxRow = Math.min(lastRow, headerRow + 180);
+  const rowsCount = Math.max(maxRow - headerRow, 0);
+
+  if (!rowsCount) {
+    throw new Error('tdmeFindTotalRow_: пустой диапазон поиска после строки ' + headerRow);
+  }
+
+  const values = sheet
+    .getRange(headerRow + 1, 1, rowsCount, lastCol)
+    .getDisplayValues();
+
+  for (let i = 0; i < values.length; i++) {
+    const hasTotal = values[i].some(value => {
+      return tdmeNormalizeForTotalSearch_(value) === 'итого';
+    });
+
+    if (hasTotal) {
+      return headerRow + 1 + i;
+    }
+  }
+
+  const commentRow = tdmeFindEnoCommentRowAfterHeader_(sheet, headerRow, maxRow, lastCol);
+
+  if (commentRow) {
+    for (let row = commentRow - 1; row > headerRow; row--) {
+      const rowValues = sheet.getRange(row, 1, 1, lastCol).getDisplayValues()[0];
+      const nonEmptyCount = rowValues.filter(value => String(value || '').trim() !== '').length;
+
+      if (nonEmptyCount >= 2) {
+        const cell = sheet.getRange(row, 1);
+        const firstCell = cell.getDisplayValue();
+
+        if (tdmeNormalizeForTotalSearch_(firstCell) !== 'итого' && !cell.getFormula()) {
+          cell.setValue('ИТОГО');
+        }
+
+        return row;
+      }
+    }
+  }
+
+  const calculatedTotalRow = tdmeGuessTotalRowByCampaignRows_(sheet, headerRow, maxRow, lastCol);
+
+  if (calculatedTotalRow) {
+    const cell = sheet.getRange(calculatedTotalRow, 1);
+
+    if (!cell.getFormula() && tdmeNormalizeForTotalSearch_(cell.getDisplayValue()) !== 'итого') {
+      cell.setValue('ИТОГО');
+    }
+
+    return calculatedTotalRow;
+  }
+
+  throw new Error(
+    'Не найдена строка ИТОГО после строки ' + headerRow +
+    '. Диапазон поиска: строки ' + (headerRow + 1) + '–' + maxRow + '.'
+  );
+}
+
+function tdmeFindEnoCommentRowAfterHeader_(sheet, headerRow, maxRow, lastCol) {
+  if (!sheet || !headerRow || !maxRow || !lastCol) return 0;
+
+  const rowsCount = Math.max(maxRow - headerRow, 0);
+  if (!rowsCount) return 0;
+
+  const values = sheet
+    .getRange(headerRow + 1, 1, rowsCount, lastCol)
+    .getDisplayValues();
+
+  for (let i = 0; i < values.length; i++) {
+    const hasComment = values[i].some(value => {
+      const text = tdmeNormalizeForTotalSearch_(value);
+      return text.indexOf('комментарии к отчету') !== -1 ||
+        text.indexOf('комментарии к отчёту') !== -1 ||
+        text.indexOf('комментарии') !== -1;
+    });
+
+    if (hasComment) {
+      return headerRow + 1 + i;
+    }
+  }
+
+  return 0;
+}
+
+function tdmeGuessTotalRowByCampaignRows_(sheet, headerRow, maxRow, lastCol) {
+  if (!sheet || !headerRow || !maxRow || !lastCol) return 0;
+
+  const rowsCount = Math.max(maxRow - headerRow, 0);
+  if (!rowsCount) return 0;
+
+  const values = sheet
+    .getRange(headerRow + 1, 1, rowsCount, lastCol)
+    .getDisplayValues();
+
+  let lastDataRow = 0;
+
+  for (let i = 0; i < values.length; i++) {
+    const rowValues = values[i];
+    const sheetRow = headerRow + 1 + i;
+    const firstCell = tdmeNormalizeForTotalSearch_(rowValues[0]);
+    const nonEmptyCount = rowValues.filter(value => String(value || '').trim() !== '').length;
+    const rowText = tdmeNormalizeForTotalSearch_(rowValues.join(' '));
+
+    if (
+      rowText.indexOf('комментарии') !== -1 ||
+      rowText.indexOf('отчет недельный') !== -1 ||
+      rowText.indexOf('отчёт недельный') !== -1
+    ) {
+      break;
+    }
+
+    if (firstCell && firstCell !== 'итого' && nonEmptyCount >= 4) {
+      lastDataRow = sheetRow;
+    }
+
+    if (!firstCell && nonEmptyCount === 0 && lastDataRow) {
+      break;
+    }
+  }
+
+  return lastDataRow ? lastDataRow + 1 : 0;
+}
+
+/**
+ * TDM 2026-07-06: аварийное восстановление ЕНО 29.06–05.07 под схему ДБ.
+ */
+function archived_tdmFixEnoCurrentWeekLikeDb20260706() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('ЕНО');
+  if (!sheet) throw new Error('Не найден лист ЕНО');
+  const topRow = 917, headerRow = 919, startRow = 920, totalRow = 939;
+
+  sheet.getRange(headerRow, 16, 1, 10).setValues([[
+    'Callibri: Спам','Callibri: Нецелевой_Лид','Ecommerce: добавление в корзину','Ecommerce: покупка','Jivo-чат','Callibri: Лид_Квал_A','Callibri: Лид_Квал_C','Факт сумма конверсий','CR','Стоимость факт CPA'
+  ]]);
+
+  const byCampaign = {
+    'tdm_search_opt_rf': {spam:0,non:0,add:0,buy:0,jivo:1,a:0,c:0},
+    'tdm_top-categ_dsa_spb': {spam:1,non:0,add:2,buy:0,jivo:1,a:0,c:0},
+    'tdm_tovarnay_general_spb_ozk': {spam:0,non:0,add:1,buy:0,jivo:1,a:0,c:0},
+    'tdm_search_opt_spb': {spam:0,non:0,add:1,buy:0,jivo:1,a:1,c:0},
+    'tdm_top-categ_t-g_rf': {spam:0,non:0,add:0,buy:0,jivo:0,a:0,c:0},
+    'tdm_tovarnay_general_rf_ozk': {spam:0,non:0,add:0,buy:0,jivo:1,a:1,c:1},
+    'tdm_tovarnay_general_kz_ozk': {spam:0,non:0,add:3,buy:0,jivo:1,a:0,c:0},
+    'tdm_search_categ_rf': {spam:0,non:0,add:0,buy:0,jivo:0,a:1,c:0},
+    'tdm_search_vendor_rf_spb': {spam:0,non:0,add:0,buy:0,jivo:1,a:0,c:1},
+    'tdm_smart-banners_rsya_spb-rf': {spam:0,non:0,add:2,buy:1,jivo:1,a:0,c:0},
+    'tdm_search_opt_kz': {spam:0,non:0,add:0,buy:0,jivo:0,a:0,c:0},
+    'tdm_top-categ_t-g_spb': {spam:0,non:0,add:1,buy:0,jivo:1,a:0,c:0},
+    'tdm_search_proizv_spb-rf': {spam:0,non:0,add:0,buy:0,jivo:0,a:0,c:0},
+    'tdm_search_categ_spb': {spam:0,non:0,add:0,buy:0,jivo:0,a:0,c:0},
+    'tdm_top-categ_dsa_t-g_kz': {spam:0,non:0,add:0,buy:0,jivo:0,a:0,c:0},
+    'tdm_top-categ_dsa_rf': {spam:0,non:0,add:0,buy:0,jivo:0,a:0,c:0},
+    'tdm_search_new_spb': {spam:0,non:0,add:0,buy:0,jivo:0,a:1,c:0},
+    'tdm_search_categ_kz': {spam:0,non:0,add:0,buy:0,jivo:0,a:0,c:0},
+    'tdm_search_stroit_rf_spb': {spam:0,non:0,add:0,buy:0,jivo:0,a:0,c:0}
+  };
+
+  for (let row = startRow; row < totalRow; row++) {
+    const name = String(sheet.getRange(row, 1).getDisplayValue() || '').trim();
+    const item = byCampaign[name] || {spam:0,non:0,add:0,buy:0,jivo:0,a:0,c:0};
+    const vals = [item.spam,item.non,item.add,item.buy,item.jivo,item.a,item.c].map(function(v){return Number(v||0)>0?Number(v||0):'-';});
+    sheet.getRange(row,16,1,7).setValues([vals]);
+    sheet.getRange(row,23).setFormula('=SUM(S'+row+':V'+row+')');
+    sheet.getRange(row,24).setFormula('=IFERROR(W'+row+'/D'+row+';0)');
+    sheet.getRange(row,25).setFormula('=IFERROR(G'+row+'/W'+row+';0)');
+  }
+  ['P','Q','R','S','T','U','V'].forEach(function(col,idx){sheet.getRange(totalRow,16+idx).setFormula('=SUM('+col+startRow+':'+col+(totalRow-1)+')');});
+  sheet.getRange(totalRow,23).setFormula('=SUM(W'+startRow+':W'+(totalRow-1)+')');
+  sheet.getRange(totalRow,24).setFormula('=IFERROR(W'+totalRow+'/D'+totalRow+';0)');
+  sheet.getRange(totalRow,25).setFormula('=IFERROR(G'+totalRow+'/W'+totalRow+';0)');
+  sheet.getRange(topRow,20,1,6).setValues([['Кол-во Лид','=W'+totalRow,'CR','=X'+totalRow,'CPA Лид','=Y'+totalRow]]);
+  sheet.getRange(945,1).setValue('Всего потрачено за неделю 74 395,38 руб. По июлю на дату как в ДБ: план 36 521,74 руб., факт 40 840,22 руб., выполнение 111,82%.');
+
+  sheet.getRange(headerRow,16,1,10).setFontColor('#000000').setFontWeight('bold').setHorizontalAlignment('center').setVerticalAlignment('middle').setWrap(true);
+  sheet.getRange(headerRow,16).setBackground('#f4cccc');
+  sheet.getRange(headerRow,17).setBackground('#cfe2f3');
+  sheet.getRange(headerRow,18,1,2).setBackground('#d9ead3');
+  sheet.getRange(headerRow,20).setBackground('#b6d7a8');
+  sheet.getRange(headerRow,21).setBackground('#d9ead3');
+  sheet.getRange(headerRow,22).setBackground('#d9d2e9');
+  sheet.getRange(headerRow,23,1,3).setBackground('#fff2cc');
+  sheet.getRange(startRow,11,totalRow-startRow+1,1).setNumberFormat('0.00%');
+  sheet.getRange(startRow,23,totalRow-startRow+1,1).setNumberFormat('0');
+  sheet.getRange(startRow,24,totalRow-startRow+1,1).setNumberFormat('0.00%');
+  sheet.getRange(startRow,25,totalRow-startRow+1,1).setNumberFormat('"р."#,##0.00');
+  SpreadsheetApp.flush();
+  return {ok:true,sheet:'ЕНО',headerRow:headerRow,totalRow:totalRow};
+}
+
+function tdmeNormalizeForTotalSearch_(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[«»"']/g, '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
