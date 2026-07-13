@@ -1138,7 +1138,7 @@ function directRegionKey_(value) {
   return normalize_(aliases[key] || key);
 }
 
-function getRegionsMondayPeriod_() {
+function archived_getRegionsMondayPeriodLegacy_() {
   const now = new Date();
   const tz = Session.getScriptTimeZone();
 
@@ -1159,16 +1159,9 @@ function getRegionsMondayPeriod_() {
 }
 
 function createTdmRegionsMondayTrigger() {
-  const handler = 'tdmUpdateRegionsCitiesReport';
-  ScriptApp.getProjectTriggers()
-    .filter(function(trigger) { return trigger.getHandlerFunction() === handler; })
-    .forEach(function(trigger) { ScriptApp.deleteTrigger(trigger); });
-
-  ScriptApp.newTrigger(handler)
-    .timeBased()
-    .onWeekDay(ScriptApp.WeekDay.MONDAY)
-    .atHour(10)
-    .create();
+  // Отдельный региональный триггер мог перезаписать проверенный отчёт.
+  // Маршрутизируем старую команду в единый стабильный планировщик.
+  return tdmStabilizeAutomationTriggers20260713();
 }
 
 function getRegionsMondayPeriod_() {

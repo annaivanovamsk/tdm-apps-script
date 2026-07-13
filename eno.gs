@@ -117,20 +117,9 @@ function fillTdmEnoPreviousFullWeek() {
 
 // Создать триггер на понедельник 9:00
 function createTdmEnoWeeklyTriggerMonday9am() {
-  const triggers = ScriptApp.getProjectTriggers();
-
-  triggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'fillTdmEnoPreviousFullWeek') {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  });
-
-  ScriptApp.newTrigger('fillTdmEnoPreviousFullWeek')
-    .timeBased()
-    .onWeekDay(ScriptApp.WeekDay.MONDAY)
-    .atHour(9)
-    .inTimezone(TDME_TIMEZONE)
-    .create();
+  // Отдельный ENO-триггер больше не создаём: все четыре отчёта должны
+  // обновляться одним проверяемым понедельничным контуром.
+  return tdmStabilizeAutomationTriggers20260713();
 }
 
 function tdmeFillReport_(dateFrom, dateTo, forcedTopRow) {

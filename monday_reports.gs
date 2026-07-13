@@ -104,6 +104,135 @@ function tdmInstallVerifiedMondayTrigger20260713() {
   };
 }
 
+/**
+ * Единое безопасное расписание ТДМ.
+ * Не изменяет данные таблиц: только удаляет старые/пустые триггеры и
+ * гарантирует по одному запуску ДБ и понедельничного контура.
+ */
+function tdmStabilizeAutomationTriggers20260713() {
+  const timezone = TDM_MONDAY_REPORTS_20260713.timezone;
+  const directHandler = 'fillTdmDbYesterday';
+  const mondayHandler = TDM_MONDAY_REPORTS_20260713.handler;
+  const disabledHandlers = [
+    'tdmAutoDailyReports20260707',
+    'tdmAutoUpdateProductsAttribution',
+    'tdmUpdateTrafficBehaviorUserLayoutWeekly_20260705_v5',
+    'fillTdmEnoPreviousFullWeek',
+    'fillTdmEnoPreviousFullMonthReport',
+    'tdmAutoWeeklyMoReports20260707',
+    'tdmUnifiedMondayReportsUpdate20260706',
+    'tdmUpdateRegionsCitiesReport',
+    'tdmUpdateRegionsReportMonday_202607_v7',
+    'tdmCallibriDailyHardSync20260709'
+  ];
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const removed = {};
+    ScriptApp.getProjectTriggers().forEach(function(trigger) {
+      const handler = trigger.getHandlerFunction();
+      if (disabledHandlers.indexOf(handler) === -1) return;
+      ScriptApp.deleteTrigger(trigger);
+      removed[handler] = Number(removed[handler] || 0) + 1;
+    });
+
+    const direct = tdmEnsureSingleTrigger20260713_(directHandler, function() {
+      ScriptApp.newTrigger(directHandler)
+        .timeBased()
+        .everyDays(1)
+        .atHour(8)
+        .inTimezone(timezone)
+        .create();
+    });
+
+    const monday = tdmEnsureSingleTrigger20260713_(mondayHandler, function() {
+      ScriptApp.newTrigger(mondayHandler)
+        .timeBased()
+        .onWeekDay(ScriptApp.WeekDay.MONDAY)
+        .atHour(9)
+        .nearMinute(20)
+        .inTimezone(timezone)
+        .create();
+    });
+
+    const audit = tdmAuditAutomationState20260713();
+    if (!audit.ok) {
+      throw new Error('Расписание ТДМ не прошло проверку: ' + JSON.stringify(audit));
+    }
+
+    return {
+      ok: true,
+      removed: removed,
+      direct: direct,
+      monday: monday,
+      audit: audit
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Read-only аудит живых триггеров ТДМ. */
+function tdmAuditAutomationState20260713() {
+  const directHandler = 'fillTdmDbYesterday';
+  const mondayHandler = TDM_MONDAY_REPORTS_20260713.handler;
+  const forbidden = [
+    'tdmAutoDailyReports20260707',
+    'tdmAutoUpdateProductsAttribution',
+    'tdmUpdateTrafficBehaviorUserLayoutWeekly_20260705_v5',
+    'fillTdmEnoPreviousFullWeek',
+    'fillTdmEnoPreviousFullMonthReport',
+    'tdmAutoWeeklyMoReports20260707',
+    'tdmUnifiedMondayReportsUpdate20260706',
+    'tdmUpdateRegionsCitiesReport',
+    'tdmUpdateRegionsReportMonday_202607_v7',
+    'tdmCallibriDailyHardSync20260709'
+  ];
+  const handlers = ScriptApp.getProjectTriggers().map(function(trigger) {
+    return trigger.getHandlerFunction();
+  }).sort();
+  const counts = handlers.reduce(function(result, handler) {
+    result[handler] = Number(result[handler] || 0) + 1;
+    return result;
+  }, {});
+  const duplicateHandlers = Object.keys(counts).filter(function(handler) {
+    return counts[handler] > 1;
+  });
+  const forbiddenPresent = forbidden.filter(function(handler) {
+    return Number(counts[handler] || 0) > 0;
+  });
+
+  return {
+    ok: Number(counts[directHandler] || 0) === 1 &&
+      Number(counts[mondayHandler] || 0) === 1 &&
+      duplicateHandlers.length === 0 && forbiddenPresent.length === 0,
+    handlers: handlers,
+    counts: counts,
+    duplicateHandlers: duplicateHandlers,
+    forbiddenPresent: forbiddenPresent,
+    expected: {
+      db: 'ежедневно около 08:00 Europe/Moscow, только за вчера',
+      monday: 'понедельник около 09:20 Europe/Moscow, ДБ → ЕНО → ЕМО → регионы'
+    }
+  };
+}
+
+function tdmEnsureSingleTrigger20260713_(handler, createCallback) {
+  const existing = ScriptApp.getProjectTriggers().filter(function(trigger) {
+    return trigger.getHandlerFunction() === handler;
+  });
+  if (existing.length === 1) {
+    return { handler: handler, kept: 1, deleted: 0, created: 0 };
+  }
+
+  existing.forEach(function(trigger) {
+    ScriptApp.deleteTrigger(trigger);
+  });
+  createCallback();
+  return { handler: handler, kept: 0, deleted: existing.length, created: 1 };
+}
+
 /** Callibri разрешает максимум 7 дней за один запрос. Окна не пересекаются. */
 function tdmCallibriAggregatePeriod20260713_(dateFrom, dateTo) {
   const merged = {};

@@ -1422,7 +1422,14 @@ const TDM_DB = {
 // =====================
 
 function tdmAutoDailyReports20260707() {
-  TDM_AUTO_20260707.daily();
+  // Старый оркестратор повторно запускал ДБ и несколько устаревших отчётов.
+  // Оставлен как безопасная заглушка для старых ручных ссылок.
+  return {
+    ok: true,
+    mode: 'LEGACY_DAILY_DISABLED',
+    canonicalDbHandler: 'fillTdmDbYesterday',
+    canonicalMondayHandler: 'tdmRunVerifiedMondayReports20260713'
+  };
 }
 
 function archived_tdmBackfillDbSearchSiteJuly0607_20260708() {
@@ -1847,7 +1854,7 @@ function tdmAutoWeeklyMoReports20260707() {
 }
 
 function archived_tdmInstallAutoReportTriggers20260707() {
-  TDM_AUTO_20260707.installTriggers();
+  return tdmStabilizeAutomationTriggers20260713();
 }
 
 const TDM_AUTO_20260707 = {
@@ -1980,7 +1987,8 @@ function tdmCallibriDailyHardSync20260709() {
 }
 
 function tdmInstallCallibriDailyHardTrigger20260709() {
-  return TDM_CALLIBRI_DAILY_20260709.installTriggers();
+  // Старый hard-триггер заменён стабильным rolling-7-days контуром.
+  return tdmInstallCallibriStableTriggers20260709();
 }
 
 const TDM_CALLIBRI_DAILY_20260709 = {

@@ -1995,21 +1995,7 @@ function tdmEnoGetPreviousFullMonthPeriod_() {
 }
 
 function archived_createTdmEnoMonthlyTrigger10am() {
-  const triggers = ScriptApp.getProjectTriggers();
-
-  triggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'fillTdmEnoPreviousFullMonthReport') {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  });
-
-  ScriptApp.newTrigger('fillTdmEnoPreviousFullMonthReport')
-    .timeBased()
-    .onMonthDay(1)
-    .atHour(10)
-    .create();
-
-  SpreadsheetApp.getActive().toast(
-    'Готово. ЕНО/ЕМО будет формироваться 1 числа в 10:00 за прошлый месяц.'
-  );
+  // Месячный standalone-триггер больше не нужен: ЕМО обновляется каждый
+  // понедельник единым контуром с ДБ, ЕНО и регионами.
+  return tdmStabilizeAutomationTriggers20260713();
 }

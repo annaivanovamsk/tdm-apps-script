@@ -219,7 +219,7 @@ function tdmCallibriRegionBucketsFromEmo_() {
   return result;
 }
 
-function tdmFetchRegionGoalBreakdown_(date1, date2) {
+function archived_tdmFetchRegionGoalBreakdownAgentLegacy_(date1, date2) {
   const token = PropertiesService.getScriptProperties().getProperty('METRIKA_TOKEN');
   if (!token) throw new Error('Не найден METRIKA_TOKEN');
 
@@ -818,7 +818,7 @@ function tdmBuildRegionEmoReport_() {
   target.setFrozenRows(Math.max(target.getFrozenRows(), startRow + 2));
 }
 
-function tdmFormatRegionReportNumbers_(sheet, rowCount, totalRow) {
+function archived_tdmFormatRegionReportNumbersLegacy_(sheet, rowCount, totalRow) {
   sheet.getRange(5, 3, rowCount + 1, 2).setNumberFormat('0');
   sheet.getRange(2, 2).setNumberFormat('0');
   sheet.getRange(2, 5).setNumberFormat('0');
