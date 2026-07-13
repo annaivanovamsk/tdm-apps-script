@@ -1843,7 +1843,7 @@ const TDM_DB_CALLIBRI_20260708 = {
 };
 
 function tdmAutoWeeklyMoReports20260707() {
-  TDM_AUTO_20260707.weekly();
+  return tdmRunVerifiedMondayReports20260713();
 }
 
 function archived_tdmInstallAutoReportTriggers20260707() {
@@ -1877,10 +1877,7 @@ const TDM_AUTO_20260707 = {
     const startedAt = new Date();
     const results = [];
 
-    results.push(this.safeCall_('fillTdmEnoPreviousFullWeek'));
-    results.push(this.safeCall_('fillTdmEnoPreviousFullMonthReport'));
-    results.push(this.safeCall_('tdmStrictValidateDbEnoEmoGoals20260707'));
-    results.push(this.safeCall_('tdmFixEnoEmoComments20260707'));
+    results.push(this.safeCall_('tdmRunVerifiedMondayReports20260713'));
 
     this.writeStatus_('weekly', startedAt, results);
   },

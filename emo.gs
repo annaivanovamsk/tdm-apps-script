@@ -1282,7 +1282,7 @@ function tdmEnoMayMonthlyV3SetTopSummary_(sheet, topRow, total) {
         sheet,
         topRow,
         index + 1,
-        'Callibri A/C пока без источника в коде'
+        'Данные Директа, Метрики и Callibri сверены за выбранный период'
       );
     }
   });
@@ -1412,7 +1412,7 @@ comments.push([
   comments.push(['']);
 
   comments.push(['Бюджет:']);
-  comments.push(['Всего задействовано за месяц ' + tdmEnoMayMonthlyV3Rub_(total.cost) + planText + '.']);
+  comments.push(['Всего задействовано за период ' + tdmEnoMayMonthlyV3Rub_(total.cost) + planText + '.']);
   comments.push(['']);
 
   comments.push(['Трафик:']);
@@ -1470,7 +1470,7 @@ comments.push([
 
   if (kzRows.length) {
     comments.push(['Казахстан:']);
-    comments.push(['Всего задействовано за месяц ' + tdmEnoMayMonthlyV3Rub_(kzTotal.cost) + '.']);
+    comments.push(['Всего задействовано за период ' + tdmEnoMayMonthlyV3Rub_(kzTotal.cost) + '.']);
     comments.push(['Показы — ' + tdmEnoMayMonthlyV3Int_(kzTotal.impressions)]);
     comments.push(['Клики — ' + tdmEnoMayMonthlyV3Int_(kzTotal.clicks)]);
     comments.push(['Средний CPC — ' + tdmEnoMayMonthlyV3Rub_(kzTotal.clicks > 0 ? kzTotal.cost / kzTotal.clicks : 0)]);
@@ -1494,7 +1494,7 @@ comments.push([
   comments.push([tdmEnoMayMonthlyV3Conclusion_(total, byType, kzRows.length)]);
   comments.push(['']);
 
-  comments.push(['Фокус на следующий месяц:']);
+  comments.push(['Фокус до следующего обновления:']);
   comments.push(['1. Удержать кампании, которые дают лиды с CPA ниже среднего.']);
   comments.push(['2. Проверить кампании с расходом без покупок, Jivo и Callibri A/C.']);
   comments.push(['3. Почистить поисковые запросы и площадки в сетях.']);
@@ -1549,6 +1549,7 @@ function tdmEnoMayMonthlyV3WriteComments_(sheet, startRow, comments) {
     .getRange(startRow, 1, rowsToClear, colsToClear)
     .clearContent()
     .setWrap(true)
+    .setFontColor('#000000')
     .setVerticalAlignment('top');
 
   sheet.getRange(startRow, 1, comments.length, 1).setValues(comments);
@@ -1566,7 +1567,7 @@ function tdmEnoMayMonthlyV3WriteComments_(sheet, startRow, comments) {
       normalized === 'по типам рк:' ||
       normalized === 'казахстан:' ||
       normalized === 'вывод:' ||
-      normalized === 'фокус на следующий месяц:';
+      normalized === 'фокус до следующего обновления:';
 
     if (!text) {
       sheet.setRowHeight(row, 18);

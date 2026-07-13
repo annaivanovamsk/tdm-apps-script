@@ -108,7 +108,7 @@ function fillTdmEno18to24May() {
 function fillTdmEnoPreviousFullWeek() {
   try {
     const period = tdmePreviousFullWeek_();
-    tdmeFillReport_(period.dateFrom, period.dateTo, null);
+    return tdmeFillReport_(period.dateFrom, period.dateTo, null);
   } catch (e) {
     tdmeNotifyError_('ЕНО не обновился', e);
     throw e;
@@ -147,7 +147,7 @@ function tdmeFillReport_(dateFrom, dateTo, forcedTopRow) {
 
   // Один неизменяемый снимок Callibri за неделю используем во всей цепочке:
   // ДБ -> распределение по кампаниям ЕНО -> итоги -> сверка.
-  const callibriSnapshot = tdmGptCallibriAggregateYandexCpcByCampaign_(dateFrom, dateTo);
+  const callibriSnapshot = tdmCallibriAggregatePeriod20260713_(dateFrom, dateTo);
   tdmApplyCallibriAggregateToDbPeriod_(callibriSnapshot, dateFrom, dateTo);
   tdmeApplyCallibriGoals_(rows, dateFrom, dateTo, callibriSnapshot);
   rows.sort((a, b) => b.cost - a.cost);
@@ -170,6 +170,9 @@ function tdmeFillReport_(dateFrom, dateTo, forcedTopRow) {
   block = tdmeFitCampaignRows_(sheet, block, rows.length);
 
   const header = tdmeHeaderMap_(sheet, block.headerRow);
+  // Сохраняем ручные комментарии по кампаниям. Автоматические при повторном
+  // запуске будут обновлены за новый период, а ручные заметки останутся.
+  const manualCampaignComments = tdmReadEmoCampaignComments20260713_(sheet, block, header);
   const dataStartRow = block.headerRow + 1;
   const dataRowsCount = Math.max(rows.length, 1);
   const dataEndRow = dataStartRow + dataRowsCount - 1;
@@ -187,6 +190,15 @@ function tdmeFillReport_(dateFrom, dateTo, forcedTopRow) {
   // но не трогает расчётные колонки CTR / CPC / CPA / CR и т.д.
   tdmeClearDataInputCells_(sheet, header, dataStartRow, dataRowsCount);
   tdmeFillRows_(sheet, header, dataStartRow, rows);
+  tdmWriteEmoCampaignComments20260713_(
+    sheet,
+    header,
+    dataStartRow,
+    rows,
+    manualCampaignComments,
+    dateFrom,
+    dateTo
+  );
 
   // Строку ИТОГО значениями НЕ перезаписываем.
   // Только фиксируем метку и диапазоны формул под фактический конец текущей недели.
@@ -203,6 +215,21 @@ function tdmeFillReport_(dateFrom, dateTo, forcedTopRow) {
 
   // Контрольная проверка, чтобы отчёт не считался успешным, если блок собрался криво.
   tdmeValidateReportBlock_(sheet, block, dataStartRow, dataEndRow, title);
+
+  return {
+    ok: true,
+    dateFrom: dateFrom,
+    dateTo: dateTo,
+    title: title,
+    block: {
+      topRow: block.topRow,
+      headerRow: block.headerRow,
+      totalRow: block.totalRow,
+      commentRow: commentRow
+    },
+    rowsCount: rows.length,
+    totals: tdmMondayTotalsFromTdme20260713_(tdmeTotals_(rows))
+  };
 }
 
 /**

@@ -2528,8 +2528,7 @@ function tdmUnifiedValidateReportsNow20260706() {
 }
 
 function tdmUnifiedMondayReportsUpdate20260706() {
-  Logger.log('SAFE_STUB_20260708: tdmUnifiedMondayReportsUpdate20260706 отключён. Старый битый триггер нейтрализован без изменения отчётов.');
-  return { ok: true, mode: 'SAFE_STUB_DISABLED', handler: 'tdmUnifiedMondayReportsUpdate20260706' };
+  return tdmRunVerifiedMondayReports20260713();
 }
 
 function tdmUpdateTrafficBehaviorUserLayoutWeekly_20260705_v5() {
@@ -2558,13 +2557,14 @@ function archived_tdmUnifiedValidateReportsNow20260706() {
 function tdmUnifiedCompareDbWithReport_(dateFrom, dateTo, sheetName, mode) {
   const db = tdmUnifiedDbTotals_(dateFrom, dateTo);
   const report = tdmUnifiedReportTotals_(sheetName, dateFrom, dateTo, mode);
-  const fields = ['impressions', 'clicks', 'cost', 'addToCart', 'purchase', 'jivo', 'leadA', 'leadC', 'fact'];
+  const fields = ['impressions', 'clicks', 'cost', 'view3', 'spam', 'nonTarget', 'addToCart', 'purchase', 'jivo', 'leadA', 'leadB', 'leadC', 'fact'];
   const diffs = [];
 
   fields.forEach(function(field) {
     const a = Number(db[field] || 0);
     const b = Number(report[field] || 0);
-    const tolerance = field === 'cost' ? 1 : 0.01;
+    // ДБ хранит расход по дням: допускаем только разницу дневного округления.
+    const tolerance = field === 'cost' ? 0.05 : 0.01;
     if (Math.abs(a - b) > tolerance) {
       diffs.push({ field: field, db: a, report: b, diff: b - a });
     }
@@ -2582,7 +2582,9 @@ function tdmUnifiedDbTotals_(dateFrom, dateTo) {
   const sheet = ss.getSheetByName('ДБ');
   if (!sheet) throw new Error('Не найден лист ДБ');
 
-  const values = sheet.getDataRange().getDisplayValues();
+  const dataRange = sheet.getDataRange();
+  const values = dataRange.getDisplayValues();
+  const rawValues = dataRange.getValues();
   const from = tdmUnifiedParseApiDate_(dateFrom).getTime();
   const to = tdmUnifiedParseApiDate_(dateTo).getTime();
   const totals = tdmUnifiedEmptyTotals_();
@@ -2603,31 +2605,36 @@ function tdmUnifiedDbTotals_(dateFrom, dateTo) {
     if (time < from || time > to) continue;
 
     foundRows++;
-    totals.impressions += tdmUnifiedNum_(values[r][header.impressions - 1]);
-    totals.clicks += tdmUnifiedNum_(values[r][header.clicks - 1]);
-    totals.cost += tdmUnifiedNum_(values[r][header.cost - 1]);
+    // Берём реальные числа: отображение в ДБ округляет расход до рублей.
+    totals.impressions += tdmUnifiedNum_(header.impressions ? rawValues[r][header.impressions - 1] : 0);
+    totals.clicks += tdmUnifiedNum_(header.clicks ? rawValues[r][header.clicks - 1] : 0);
+    totals.cost += tdmUnifiedNum_(header.cost ? rawValues[r][header.cost - 1] : 0);
+    totals.view3 += tdmUnifiedNum_(header.view3 ? rawValues[r][header.view3 - 1] : 0);
+    totals.spam += tdmUnifiedNum_(header.spam ? rawValues[r][header.spam - 1] : 0);
+    totals.nonTarget += tdmUnifiedNum_(header.nonTarget ? rawValues[r][header.nonTarget - 1] : 0);
 
     // В июне 2026 шапка ДБ ещё старая, но семантически колонки уже новые:
     // O корзина, P покупка, Q Jivo, R Callibri A, S Callibri C, T факт.
     const apiDateText = Utilities.formatDate(d, 'Europe/Moscow', 'yyyy-MM-dd');
     if (apiDateText >= '2026-06-01' && apiDateText <= '2026-06-30') {
-      totals.addToCart += tdmUnifiedNum_(values[r][14]); // O
-      totals.purchase += tdmUnifiedNum_(values[r][15]);  // P
-      totals.jivo += tdmUnifiedNum_(values[r][16]);      // Q
-      totals.leadA += tdmUnifiedNum_(values[r][17]);     // R
-      totals.leadC += tdmUnifiedNum_(values[r][18]);     // S
-      totals.fact += tdmUnifiedNum_(values[r][19]);      // T
+      totals.addToCart += tdmUnifiedNum_(rawValues[r][14]); // O
+      totals.purchase += tdmUnifiedNum_(rawValues[r][15]);  // P
+      totals.jivo += tdmUnifiedNum_(rawValues[r][16]);      // Q
+      totals.leadA += tdmUnifiedNum_(rawValues[r][17]);     // R
+      totals.leadC += tdmUnifiedNum_(rawValues[r][18]);     // S
     } else {
-      totals.addToCart += tdmUnifiedNum_(values[r][header.addToCart - 1]);
-      totals.purchase += tdmUnifiedNum_(values[r][header.purchase - 1]);
-      totals.jivo += tdmUnifiedNum_(values[r][header.jivo - 1]);
-      totals.leadA += tdmUnifiedNum_(values[r][header.leadA - 1]);
-      totals.leadC += tdmUnifiedNum_(values[r][header.leadC - 1]);
-      totals.fact += tdmUnifiedNum_(values[r][header.fact - 1]);
+      totals.addToCart += tdmUnifiedNum_(header.addToCart ? rawValues[r][header.addToCart - 1] : 0);
+      totals.purchase += tdmUnifiedNum_(header.purchase ? rawValues[r][header.purchase - 1] : 0);
+      totals.jivo += tdmUnifiedNum_(header.jivo ? rawValues[r][header.jivo - 1] : 0);
+      totals.leadA += tdmUnifiedNum_(header.leadA ? rawValues[r][header.leadA - 1] : 0);
+      totals.leadB += tdmUnifiedNum_(header.leadB ? rawValues[r][header.leadB - 1] : 0);
+      totals.leadC += tdmUnifiedNum_(header.leadC ? rawValues[r][header.leadC - 1] : 0);
     }
   }
 
   if (!foundRows) throw new Error('ДБ: не найдены строки дат за период ' + dateFrom + '—' + dateTo);
+  // Итог считаем из первичных колонок, а не из старой формулы/названия ДБ.
+  totals.fact = totals.purchase + totals.jivo + totals.leadA + totals.leadB + totals.leadC;
   return totals;
 }
 
@@ -2663,7 +2670,8 @@ function tdmUnifiedReportTotals_(sheetName, dateFrom, dateTo, mode) {
   let headerRow = -1;
   for (let r = titleRow; r < Math.min(values.length, titleRow + 10); r++) {
     const rowNorm = values[r].map(tdmUnifiedNorm_);
-    if (rowNorm.indexOf('рк') !== -1 && rowNorm.indexOf('клики') !== -1 && rowNorm.join(' ').indexOf('факт сумма конверсий') !== -1) {
+    const hasEntity = rowNorm.indexOf('рк') !== -1 || rowNorm.indexOf('регион') !== -1;
+    if (hasEntity && rowNorm.indexOf('клики') !== -1 && rowNorm.join(' ').indexOf('факт сумма конверсий') !== -1) {
       headerRow = r;
       break;
     }
@@ -2685,10 +2693,14 @@ function tdmUnifiedReportTotals_(sheetName, dateFrom, dateTo, mode) {
     impressions: tdmUnifiedNum_(row[header.impressions - 1]),
     clicks: tdmUnifiedNum_(row[header.clicks - 1]),
     cost: tdmUnifiedNum_(row[header.cost - 1]),
+    view3: tdmUnifiedNum_(row[header.view3 - 1]),
+    spam: tdmUnifiedNum_(row[header.spam - 1]),
+    nonTarget: tdmUnifiedNum_(row[header.nonTarget - 1]),
     addToCart: tdmUnifiedNum_(row[header.addToCart - 1]),
     purchase: tdmUnifiedNum_(row[header.purchase - 1]),
     jivo: tdmUnifiedNum_(row[header.jivo - 1]),
     leadA: tdmUnifiedNum_(row[header.leadA - 1]),
+    leadB: tdmUnifiedNum_(row[header.leadB - 1]),
     leadC: tdmUnifiedNum_(row[header.leadC - 1]),
     fact: tdmUnifiedNum_(row[header.fact - 1])
   };
@@ -2707,10 +2719,14 @@ function tdmUnifiedHeaderMap_(row) {
     impressions: exact('Показы'),
     clicks: exact('Клики'),
     cost: contains('Расход ФАКТ') || contains('Расход c НДС') || contains('Расход с НДС'),
+    view3: contains('Просмотр 3х страниц'),
+    spam: contains('Callibri: Спам'),
+    nonTarget: contains('Callibri: Нецелевой_Лид'),
     addToCart: contains('Ecommerce: добавление в корзину'),
     purchase: contains('Ecommerce: покупка'),
     jivo: contains('Jivo-чат') || contains('575188424'),
     leadA: contains('Callibri: Лид_Квал_A'),
+    leadB: contains('Callibri: Лид_Квал_B'),
     leadC: contains('Callibri: Лид_Квал_C'),
     fact: contains('Факт сумма конверсий')
   };
@@ -2787,7 +2803,11 @@ function tdmUnifiedShortDateNoZero_(apiDate) {
 }
 
 function tdmUnifiedEmptyTotals_() {
-  return { impressions: 0, clicks: 0, cost: 0, addToCart: 0, purchase: 0, jivo: 0, leadA: 0, leadC: 0, fact: 0 };
+  return {
+    impressions: 0, clicks: 0, cost: 0, view3: 0,
+    spam: 0, nonTarget: 0, addToCart: 0, purchase: 0,
+    jivo: 0, leadA: 0, leadB: 0, leadC: 0, fact: 0
+  };
 }
 
 function tdmUnifiedNorm_(value) {
