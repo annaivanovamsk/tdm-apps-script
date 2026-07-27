@@ -32,3 +32,6 @@ jobs:
 
       - name: Push to Apps Script
         run: clasp push --force
+
+      - name: Run verified TDM reports once
+        run: clasp run tdmRunVerifiedMondayReports20260713
