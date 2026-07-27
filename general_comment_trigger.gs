@@ -4,6 +4,7 @@
  * Метрику или Callibri API.
  */
 const TDM_GENERAL_COMMENT_TRIGGER_20260727 = {
+  spreadsheetId: '1zXDDfiRYHJE34iOJg-QfAC0bvoTKMIAuVMfsJS0z5Dg',
   handler: 'tdmRunGeneralCommentMonday20260727',
   timezone: 'Europe/Moscow'
 };
@@ -62,11 +63,31 @@ function tdmInstallGeneralCommentMondayTrigger20260727() {
     throw new Error('Триггер общего комментария установлен неоднозначно: ' + count);
   }
 
-  return {
+  const result = {
     ok: true,
     deleted: deleted,
     handler: config.handler,
     schedule: 'MONDAY 10:30 Europe/Moscow',
     count: count
   };
+
+  const ss = SpreadsheetApp.openById(config.spreadsheetId);
+  const audit = ss.getSheetByName('_GPT Weekly Audit');
+  if (audit) {
+    audit.appendRow([
+      Utilities.formatDate(new Date(), config.timezone, 'dd.MM.yyyy HH:mm:ss'),
+      '',
+      '',
+      'TDM_2026',
+      'ТДМ',
+      'OK',
+      'Apps Script trigger',
+      'Общий комментарий: установлен понедельничный триггер 10:30 Europe/Moscow',
+      'Источник только сформированные листы ЕНО, Callibri_Сверка и Отчет регионы',
+      JSON.stringify(result),
+      JSON.stringify(result)
+    ]);
+  }
+
+  return result;
 }
