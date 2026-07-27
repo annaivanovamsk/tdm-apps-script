@@ -32,6 +32,3 @@ jobs:
 
       - name: Push to Apps Script
         run: clasp push --force
-
-      - name: Ensure Monday general comment trigger
-        run: clasp run tdmInstallGeneralCommentMondayTrigger20260727
