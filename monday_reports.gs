@@ -43,6 +43,7 @@ function tdmRunVerifiedMondayReports20260713() {
     const regions = tdmBuildVerifiedRegionReport20260713_(month.dateFrom, month.dateTo, emo.block);
 
     const validation = tdmValidateMondayReports20260713_(week, month, eno, emo, regions);
+    const generalComment = tdmBuildGeneralComment20260727_(week, month, eno, emo, regions);
     SpreadsheetApp.flush();
 
     return {
@@ -52,7 +53,8 @@ function tdmRunVerifiedMondayReports20260713() {
       eno: eno,
       emo: emo,
       regions: regions,
-      validation: validation
+      validation: validation,
+      generalComment: generalComment
     };
   } catch (error) {
     tdmeNotifyError_('ТДМ: понедельничные отчёты не обновились', error);
@@ -213,7 +215,7 @@ function tdmAuditAutomationState20260713() {
     forbiddenPresent: forbiddenPresent,
     expected: {
       db: 'ежедневно около 08:00 Europe/Moscow, только за вчера',
-      monday: 'понедельник около 09:20 Europe/Moscow, ДБ → ЕНО → ЕМО → регионы'
+      monday: 'понедельник около 09:20 Europe/Moscow, ДБ → ЕНО → ЕМО → регионы → общий комментарий'
     }
   };
 }
