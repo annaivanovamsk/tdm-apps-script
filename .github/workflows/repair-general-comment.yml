@@ -1,0 +1,87 @@
+name: Repair TDM general comment automation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/repair-general-comment.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Patch Monday pipeline
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('monday_reports.gs')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  "    const validation = tdmValidateMondayReports20260713_(week, month, eno, emo, regions);\n    SpreadsheetApp.flush();",
+                  "    const validation = tdmValidateMondayReports20260713_(week, month, eno, emo, regions);\n    const generalComment = tdmBuildGeneralComment20260727_(week, month, eno, emo, regions);\n    SpreadsheetApp.flush();"
+              ),
+              (
+                  "      regions: regions,\n      validation: validation",
+                  "      regions: regions,\n      validation: validation,\n      generalComment: generalComment"
+              ),
+              (
+                  "      monday: 'понедельник около 09:20 Europe/Moscow, ДБ → ЕНО → ЕМО → регионы'",
+                  "      monday: 'понедельник около 09:20 Europe/Moscow, ДБ → ЕНО → ЕМО → регионы → общий комментарий'"
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one match, found {count}: {old[:80]}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit repaired pipeline
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add monday_reports.gs
+          git commit -m "Run general comment in Monday TDM pipeline"
+          git push
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install clasp
+        run: npm install -g @google/clasp
+
+      - name: Restore clasp credentials
+        run: |
+          printf '%s' '${{ secrets.CLASPRC_JSON }}' > ~/.clasprc.json
+          chmod 600 ~/.clasprc.json
+
+      - name: Deploy repaired Apps Script
+        run: clasp push --force
+
+      - name: Restore canonical triggers
+        continue-on-error: true
+        run: clasp run tdmStabilizeAutomationTriggers20260713
+
+      - name: Rebuild current general comment
+        continue-on-error: true
+        run: clasp run tdmBuildGeneralCommentNow20260727
