@@ -1,0 +1,72 @@
+name: Verify TDM general comment deployment
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/verify-general-comment-automation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install clasp
+        run: npm install -g @google/clasp
+
+      - name: Restore clasp credentials
+        run: |
+          printf '%s' '${{ secrets.CLASPRC_JSON }}' > ~/.clasprc.json
+          chmod 600 ~/.clasprc.json
+
+      - name: Deploy, stabilize and rebuild
+        shell: bash
+        run: |
+          set +e
+          clasp push --force > deploy.log 2>&1
+          DEPLOY_CODE=$?
+
+          clasp run tdmStabilizeAutomationTriggers20260713 > triggers.log 2>&1
+          TRIGGER_CODE=$?
+
+          clasp run tdmBuildGeneralCommentNow20260727 > comment.log 2>&1
+          COMMENT_CODE=$?
+
+          {
+            echo "checked_at_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "deploy_exit_code=$DEPLOY_CODE"
+            echo "trigger_exit_code=$TRIGGER_CODE"
+            echo "comment_exit_code=$COMMENT_CODE"
+            echo
+            echo "[deploy]"
+            tail -n 30 deploy.log
+            echo
+            echo "[triggers]"
+            tail -n 30 triggers.log
+            echo
+            echo "[comment]"
+            tail -n 30 comment.log
+          } > automation_status.txt
+
+      - name: Commit verification status
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add automation_status.txt
+          git commit -m "Record TDM automation verification"
+          git push
