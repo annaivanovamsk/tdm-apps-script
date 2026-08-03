@@ -1,0 +1,35 @@
+name: operator-listclients-check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/operator-listclients-check.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Operator v3 listClients
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://script.google.com/macros/s/AKfycbzeaoctLXaIEO5zvediMf2UXkjmJ886YMg13KONi_yqLy79-ZmuZv6cz5XAA9QLLLA-/exec'
+          curl -sS -L -X POST "$URL" \
+            -H 'Content-Type: application/json' \
+            --data '{"action":"listClients"}' \
+            -o response.json
+          cat response.json
+          python - <<'PY'
+          import json
+          with open('response.json', encoding='utf-8') as f:
+              data = json.load(f)
+          clients = data.get('clients') or []
+          keys = [str(x.get('clientKey', '')) for x in clients if isinstance(x, dict)]
+          print('LISTCLIENTS_OK=', data.get('ok'))
+          print('LISTCLIENTS_COUNT=', data.get('count'))
+          print('CLIENT_KEY_FOUND=', 'Cleaning_SPB_2026' in keys)
+          print('CLIENT_KEYS=', keys)
+          if not data.get('ok') or 'Cleaning_SPB_2026' not in keys:
+              raise SystemExit(1)
+          PY
