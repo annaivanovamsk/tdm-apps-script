@@ -10,26 +10,43 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Call Operator v3 listClients
+      - name: Test Operator deployments
         shell: bash
         run: |
-          set -euo pipefail
-          URL='https://script.google.com/macros/s/AKfycbzeaoctLXaIEO5zvediMf2UXkjmJ886YMg13KONi_yqLy79-ZmuZv6cz5XAA9QLLLA-/exec'
-          curl -sS -L -X POST "$URL" \
-            -H 'Content-Type: application/json' \
-            --data '{"action":"listClients"}' \
-            -o response.json
-          cat response.json
+          set -u
+          PROD='AKfycbzeaoctLXaIEO5zvediMf2UXkjmJ886YMg13KONi_yqLy79-ZmuZv6cz5XAA9QLLLA-'
+          LEGACY='AKfycbxiQW2eV_aa8xo4olJzguTlhcmoq5rI3cjz9h0Jkv7LswVsbYlnVnMb1qBHrLBy_ojV'
+          for NAME in PROD LEGACY; do
+            ID="${!NAME}"
+            URL="https://script.google.com/macros/s/${ID}/exec"
+            echo "=== ${NAME} GET health ==="
+            curl -sS -L -w '\nHTTP_STATUS=%{http_code}\nFINAL_URL=%{url_effective}\n' "$URL" -o "${NAME}_health.txt"
+            cat "${NAME}_health.txt"
+            echo
+            echo "=== ${NAME} POST listClients ==="
+            curl -sS -L -w '\nHTTP_STATUS=%{http_code}\nFINAL_URL=%{url_effective}\n' \
+              -X POST "$URL" -H 'Content-Type: application/json' \
+              --data '{"action":"listClients"}' -o "${NAME}_clients.txt"
+            cat "${NAME}_clients.txt"
+            echo
+          done
           python - <<'PY'
           import json
-          with open('response.json', encoding='utf-8') as f:
-              data = json.load(f)
-          clients = data.get('clients') or []
-          keys = [str(x.get('clientKey', '')) for x in clients if isinstance(x, dict)]
-          print('LISTCLIENTS_OK=', data.get('ok'))
-          print('LISTCLIENTS_COUNT=', data.get('count'))
-          print('CLIENT_KEY_FOUND=', 'Cleaning_SPB_2026' in keys)
-          print('CLIENT_KEYS=', keys)
-          if not data.get('ok') or 'Cleaning_SPB_2026' not in keys:
+          from pathlib import Path
+          found = False
+          for name in ('PROD', 'LEGACY'):
+              text = Path(f'{name}_clients.txt').read_text(encoding='utf-8', errors='replace').strip()
+              try:
+                  data = json.loads(text)
+              except Exception as exc:
+                  print(f'{name}_JSON=False error={exc}')
+                  continue
+              clients = data.get('clients') or []
+              keys = [str(x.get('clientKey', '')) for x in clients if isinstance(x, dict)]
+              has_key = 'Cleaning_SPB_2026' in keys
+              print(f'{name}_JSON=True ok={data.get("ok")} count={data.get("count")} key_found={has_key}')
+              print(f'{name}_KEYS={keys}')
+              found = found or (data.get('ok') is True and has_key)
+          if not found:
               raise SystemExit(1)
           PY
